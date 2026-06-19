@@ -1,13 +1,35 @@
 "use server";
 
+import { randomBytes } from "crypto";
 import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
 import type { FloorPlan } from "@/lib/floorplan-schema";
+import { isUserType, type UserType } from "@/lib/user-types";
+
+export interface SharedFloorPlanRecord {
+  id: string;
+  prompt: string;
+  created_at: string;
+  floor_plan_json: FloorPlan;
+  shared_at: string | null;
+  user_type: UserType | null;
+}
+
+export interface FloorPlanVersionRecord {
+  id: string;
+  floor_plan_id: string;
+  version_number: number;
+  prompt: string;
+  floor_plan_json: FloorPlan;
+  created_at: string;
+}
 
 export async function saveFloorPlan(
   prompt: string, 
   enhancedPrompt: string, 
-  floorPlanJson: FloorPlan
+  floorPlanJson: FloorPlan,
+  planId?: string | null,
 ) {
   const cookieStore = await cookies();
   const supabase = createClient(cookieStore);
@@ -17,23 +39,209 @@ export async function saveFloorPlan(
     throw new Error("You must be logged in to save plans.");
   }
 
-  const { data, error } = await supabase
-    .from("floor_plans")
-    .insert({
-      user_id: user.id,
-      prompt,
-      enhanced_prompt: enhancedPrompt,
-      floor_plan_json: floorPlanJson
-    })
-    .select("id")
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("user_type")
+    .eq("id", user.id)
     .single();
+  let userType: UserType | null = null;
+  if (isUserType(profile?.user_type)) {
+    userType = profile.user_type;
+  } else if (isUserType(user.user_metadata?.user_type)) {
+    userType = user.user_metadata.user_type;
+  }
+
+  const payload = {
+    prompt,
+    enhanced_prompt: enhancedPrompt,
+    floor_plan_json: floorPlanJson,
+    user_type: userType,
+  };
+
+  const query = planId
+    ? supabase
+      .from("floor_plans")
+      .update(payload)
+      .eq("id", planId)
+      .eq("user_id", user.id)
+      .select("id")
+      .single()
+    : supabase
+      .from("floor_plans")
+      .insert({
+        user_id: user.id,
+        ...payload,
+      })
+      .select("id")
+      .single();
+
+  const { data, error } = await query;
 
   if (error) {
     console.error("Save Plan Error:", error);
     throw new Error(error.message);
   }
 
+  await createFloorPlanVersion(supabase, data.id, user.id, prompt, enhancedPrompt, floorPlanJson);
+  revalidatePath("/dashboard");
   return data.id;
+}
+
+export async function getFloorPlanVersions(planId: string): Promise<FloorPlanVersionRecord[]> {
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error("You must be logged in to view version history.");
+  }
+
+  const { data, error } = await supabase
+    .from("floor_plan_versions")
+    .select("id, floor_plan_id, version_number, prompt, floor_plan_json, created_at")
+    .eq("floor_plan_id", planId)
+    .eq("user_id", user.id)
+    .order("version_number", { ascending: false })
+    .limit(12);
+
+  if (error) {
+    console.error("Get Floor Plan Versions Error:", error);
+    throw new Error(error.message);
+  }
+
+  return (data ?? []).map((version) => ({
+    id: version.id,
+    floor_plan_id: version.floor_plan_id,
+    version_number: version.version_number,
+    prompt: version.prompt,
+    floor_plan_json: version.floor_plan_json as FloorPlan,
+    created_at: version.created_at,
+  }));
+}
+
+async function createFloorPlanVersion(
+  supabase: ReturnType<typeof createClient>,
+  planId: string,
+  userId: string,
+  prompt: string,
+  enhancedPrompt: string,
+  floorPlanJson: FloorPlan,
+) {
+  const { data: latestVersion, error: latestVersionError } = await supabase
+    .from("floor_plan_versions")
+    .select("version_number")
+    .eq("floor_plan_id", planId)
+    .eq("user_id", userId)
+    .order("version_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestVersionError) {
+    console.error("Latest Floor Plan Version Error:", latestVersionError);
+    throw new Error(latestVersionError.message);
+  }
+
+  const versionNumber = (latestVersion?.version_number ?? 0) + 1;
+  const { error } = await supabase
+    .from("floor_plan_versions")
+    .insert({
+      floor_plan_id: planId,
+      user_id: userId,
+      version_number: versionNumber,
+      prompt,
+      enhanced_prompt: enhancedPrompt,
+      floor_plan_json: floorPlanJson,
+    });
+
+  if (error) {
+    console.error("Create Floor Plan Version Error:", error);
+    throw new Error(error.message);
+  }
+}
+
+export async function createShareLink(planId: string) {
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error("You must be logged in to share plans.");
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = randomBytes(24).toString("base64url");
+    const { data, error } = await supabase
+      .from("floor_plans")
+      .update({ share_token: token, share_enabled: true, shared_at: new Date().toISOString() })
+      .eq("id", planId)
+      .eq("user_id", user.id)
+      .select("share_token")
+      .single();
+
+    if (!error && data?.share_token) {
+      revalidatePath("/dashboard");
+      return { token: data.share_token as string, path: `/share/${data.share_token}` };
+    }
+
+    if (error?.code !== "23505") {
+      console.error("Create Share Link Error:", error);
+      throw new Error(error?.message || "Failed to create share link");
+    }
+  }
+
+  throw new Error("Failed to create a unique share link. Try again.");
+}
+
+export async function revokeShareLink(planId: string) {
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error("You must be logged in to manage share links.");
+  }
+
+  const { error } = await supabase
+    .from("floor_plans")
+    .update({ share_token: null, share_enabled: false, shared_at: null })
+    .eq("id", planId)
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("Revoke Share Link Error:", error);
+    throw new Error(error.message);
+  }
+
+  revalidatePath("/dashboard");
+}
+
+export async function getSharedFloorPlan(token: string): Promise<SharedFloorPlanRecord | null> {
+  const normalizedToken = token.trim();
+  if (!/^[A-Za-z0-9_-]{20,120}$/.test(normalizedToken)) return null;
+
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { data, error } = await supabase
+    .from("floor_plans")
+    .select("id, prompt, created_at, floor_plan_json, shared_at, user_type")
+    .eq("share_token", normalizedToken)
+    .eq("share_enabled", true)
+    .single();
+
+  if (error) {
+    if (error.code !== "PGRST116") console.error("Get Shared Floor Plan Error:", error);
+    return null;
+  }
+
+  const userType = isUserType(data.user_type) ? data.user_type : null;
+  return {
+    id: data.id,
+    prompt: data.prompt,
+    created_at: data.created_at,
+    floor_plan_json: data.floor_plan_json as FloorPlan,
+    shared_at: data.shared_at,
+    user_type: userType,
+  };
 }
 
 export async function deleteFloorPlan(id: string) {
@@ -157,7 +365,7 @@ export async function getProfile() {
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("full_name, avatar_url, updated_at, credits")
+    .select("full_name, avatar_url, updated_at, credits, user_type")
     .eq("id", user.id)
     .single();
 
@@ -172,6 +380,7 @@ export async function getProfile() {
     full_name: data?.full_name ?? user.user_metadata?.full_name ?? "",
     avatar_url: data?.avatar_url ?? user.user_metadata?.avatar_url ?? null,
     credits: data?.credits ?? 0,
+    user_type: data?.user_type ?? user.user_metadata?.user_type ?? null,
   };
 }
 

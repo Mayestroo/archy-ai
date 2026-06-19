@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { logout } from "@/app/login/actions";
 import Logo from "@/components/Logo";
+import ThemeToggle from "@/components/ThemeToggle";
 
 interface HeaderUser {
   id?: string;
@@ -201,6 +202,9 @@ export default function Header({ user, loading = false }: HeaderProps) {
               </Link>
             </>
           )}
+
+          {/* Theme toggle */}
+          <ThemeToggle />
 
           {/* Mobile menu toggle */}
           <button

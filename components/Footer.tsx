@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import Logo from "@/components/Logo";
 
 const FOOTER_COLUMNS = [
@@ -29,6 +32,11 @@ const FOOTER_COLUMNS = [
 ];
 
 export default function Footer() {
+  const pathname = usePathname();
+
+  // Hide footer completely in editor (full-screen tool)
+  if (pathname?.startsWith("/editor")) return null;
+
   return (
     <footer className="w-full border-t border-border bg-background mt-auto">
       <div className="max-w-[1400px] mx-auto px-6 py-12 grid grid-cols-2 md:grid-cols-5 gap-8">

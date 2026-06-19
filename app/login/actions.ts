@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
+import { isUserType } from "@/lib/user-types";
 
 export async function login(formData: FormData) {
   const email = formData.get("email") as string;
@@ -50,16 +51,17 @@ export async function signInWithGoogle(formData?: FormData) {
   const supabase = createClient(cookieStore);
   
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-  // Carry referral ID through OAuth round-trip via the redirectTo query param
+  // Carry signup context through OAuth round-trip via the redirectTo query params.
   const refId = formData?.get("ref") as string | null;
-  const callbackUrl = refId
-    ? `${siteUrl}/auth/callback?ref=${refId}`
-    : `${siteUrl}/auth/callback`;
+  const userTypeValue = formData?.get("user_type") as string | null;
+  const callbackUrl = new URL("/auth/callback", siteUrl);
+  if (refId) callbackUrl.searchParams.set("ref", refId);
+  if (isUserType(userTypeValue)) callbackUrl.searchParams.set("user_type", userTypeValue);
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: callbackUrl,
+      redirectTo: callbackUrl.toString(),
     },
   });
 

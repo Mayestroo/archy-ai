@@ -4,24 +4,32 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { deleteFloorPlan } from "@/app/actions";
 import type { FloorPlan } from "@/lib/floorplan-schema";
+import { getStarterTemplateSet, type StarterTemplateSet } from "@/lib/starter-templates";
+import type { UserType } from "@/lib/user-types";
+import SharePlanControls from "@/components/SharePlanControls";
 
 interface PlanRecord {
   id: string;
   prompt: string;
   created_at: string;
   floor_plan_json: FloorPlan;
+  share_token?: string | null;
+  share_enabled?: boolean | null;
+  shared_at?: string | null;
 }
 
 interface PlansListProps {
   initialPlans: PlanRecord[];
+  userType?: UserType | null;
 }
 
-export default function PlansList({ initialPlans }: PlansListProps) {
+export default function PlansList({ initialPlans, userType }: PlansListProps) {
   const [plans, setPlans] = useState(initialPlans);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const starterSet = getStarterTemplateSet(userType);
 
   function handleDelete(id: string) {
     setDeletingId(id);
@@ -69,26 +77,19 @@ export default function PlansList({ initialPlans }: PlansListProps) {
         </div>
       )}
 
+      <StarterTemplates starterSet={starterSet} compact={plans.length > 0} />
+
       {plans.length === 0 ? (
-        <div className="bg-card border border-dashed border-border rounded-2xl p-16 text-center">
+        <div className="bg-card border border-dashed border-border rounded-2xl p-10 text-center">
           <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-secondary flex items-center justify-center">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
               <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
           <p className="text-base font-semibold text-foreground mb-1">No plans yet</p>
-          <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">
-            Describe your dream space and Archy AI will generate a floor plan for you in seconds.
+          <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+            Choose a starter brief above or open the editor to write your own.
           </p>
-          <Link
-            href="/editor"
-            className="inline-flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-xl bg-foreground text-background hover:opacity-90"
-          >
-            Create your first plan
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </Link>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -169,6 +170,19 @@ export default function PlansList({ initialPlans }: PlansListProps) {
                       </button>
                     )}
                   </div>
+                  <SharePlanControls
+                    planId={plan.id}
+                    initialShareToken={plan.share_token}
+                    initialShareEnabled={plan.share_enabled}
+                    variant="card"
+                    onShareTokenChange={(token) => {
+                      setPlans((currentPlans) => currentPlans.map((currentPlan) => (
+                        currentPlan.id === plan.id
+                          ? { ...currentPlan, share_token: token, share_enabled: !!token, shared_at: token ? new Date().toISOString() : null }
+                          : currentPlan
+                      )));
+                    }}
+                  />
                 </div>
               </div>
             );
@@ -176,6 +190,54 @@ export default function PlansList({ initialPlans }: PlansListProps) {
         </div>
       )}
     </div>
+  );
+}
+
+function StarterTemplates({ starterSet, compact }: { starterSet: StarterTemplateSet; compact: boolean }) {
+  return (
+    <section className={`${compact ? "mb-10" : "mb-6"} rounded-2xl border border-border bg-card p-5 md:p-6`}>
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 mb-5">
+        <div>
+          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-2">
+            {starterSet.eyebrow}
+          </p>
+          <h2 className="text-xl font-extrabold tracking-tight text-foreground">{starterSet.title}</h2>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">{starterSet.description}</p>
+        </div>
+        <Link
+          href="/editor"
+          className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Write my own brief
+        </Link>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {starterSet.templates.map((template) => (
+          <Link
+            key={template.title}
+            href={`/editor?prompt=${encodeURIComponent(template.prompt)}`}
+            className="group rounded-xl border border-border bg-background p-4 hover:border-[#5D5DFF]/70 hover:bg-[#5D5DFF]/5 transition-all"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-foreground group-hover:text-[#5D5DFF] transition-colors">
+                  {template.title}
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                  {template.description}
+                </p>
+              </div>
+              <span className="mt-0.5 text-muted-foreground group-hover:text-[#5D5DFF] transition-colors" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }
 

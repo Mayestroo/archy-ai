@@ -1,4 +1,4 @@
-# Project Tracking: Archai Platform
+# Project Tracking: Archy AI Platform
 
 This file tracks the current state of development, implemented features, and pending tasks.
 
@@ -13,6 +13,7 @@ This file tracks the current state of development, implemented features, and pen
 
 ### AI & Core
 - [x] **AI Floor Plan Generation**: Two-stage pipeline (Gemini → Layout Engine)
+- [x] **AI Room Specifications**: Per-room area, aspect ratio, zone, and adjacency hints for proportional scaling
 - [x] **2D Blueprint Canvas** (`FloorPlanCanvas` — react-konva)
 - [x] **3D Preview Engine** (`FloorPlan3D` — Three.js / R3F)
 - [x] **PDF Export**: canvas → jsPDF download
@@ -66,9 +67,9 @@ supabase/migrations/20260430_credits_system.sql    ← credits column + trigger
 - [ ] **Stripe billing**: wire credits to real payment (Stripe)
 - [ ] **Waitlist form**: connect to email provider (Loops / Mailchimp)
 - [x] **Refinement loop**: dedicated `buildRefinementPrompt` — preserves unchanged rooms, explicit delta rules
-- [ ] **Material customisation**: room colours / finishes in 3D preview
-- [ ] **Render export**: high-res PNG / ray-traced PDF
+- [x] **Material customisation**: room colours / finishes in 3D preview
+- [x] **Render export**: high-res PNG / print-quality PDF
 - [ ] **Blog CMS**: replace static posts with a headless CMS (Contentlayer / Sanity)
 
 ---
-*Last updated: 2026-04-30*
+*Last updated: 2026-06-12*

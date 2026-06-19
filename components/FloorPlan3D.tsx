@@ -3,7 +3,9 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import { Suspense, useMemo } from "react";
-import type { FloorPlan, Room, Door, Window as FPWindow } from "@/lib/floorplan-schema";
+import type { FloorPlan, Room, Door, FurnitureItem, FurnitureType, Window as FPWindow } from "@/lib/floorplan-schema";
+import { getRoomMaterial } from "@/lib/materials";
+import { getOpeningWidthMeters } from "@/lib/openings";
 
 interface FloorPlan3DProps {
   floorPlan: FloorPlan;
@@ -84,8 +86,11 @@ export default function FloorPlan3D({ floorPlan }: FloorPlan3DProps) {
               key={room.id}
               room={room}
               color={PALETTE[i % PALETTE.length]}
+              floorColor={getRoomMaterial(floorPlan, room.id)?.floorColor}
+              wallColor={getRoomMaterial(floorPlan, room.id)?.wallColor}
               doors={floorPlan.doors?.filter((d) => d.roomId === room.id) ?? []}
               windows={floorPlan.windows?.filter((w) => w.roomId === room.id) ?? []}
+              furniture={floorPlan.furniture?.filter((item) => item.roomId === room.id) ?? []}
             />
           ))}
 
@@ -108,11 +113,14 @@ export default function FloorPlan3D({ floorPlan }: FloorPlan3DProps) {
 interface RoomMeshProps {
   room: Room;
   color: string;
+  floorColor?: string;
+  wallColor?: string;
   doors: Door[];
   windows: FPWindow[];
+  furniture: FurnitureItem[];
 }
 
-function RoomMesh({ room, color, doors, windows }: RoomMeshProps) {
+function RoomMesh({ room, color, floorColor, wallColor, doors, windows, furniture }: RoomMeshProps) {
   const x = room.x / PX_PER_M;
   const z = room.y / PX_PER_M;
   const w = room.width / PX_PER_M;
@@ -125,8 +133,12 @@ function RoomMesh({ room, color, doors, windows }: RoomMeshProps) {
       {/* Floor */}
       <mesh receiveShadow position={[cx, 0.005, cz]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[w, d]} />
-        <meshStandardMaterial color={color} opacity={0.35} transparent roughness={0.9} />
+        <meshStandardMaterial color={floorColor ?? color} opacity={floorColor ? 0.82 : 0.35} transparent roughness={0.9} />
       </mesh>
+
+      {furniture.map((item) => (
+        <FurnitureMesh key={item.id} room={room} item={item} />
+      ))}
 
       {/* Walls — split each side around the opening if any */}
       <Wall
@@ -134,39 +146,84 @@ function RoomMesh({ room, color, doors, windows }: RoomMeshProps) {
         start={[x, 0, z]}
         length={w}
         axis="x"
-        openings={[...doors, ...windows]
-          .filter((o) => o.wall === "top")
-          .map((o) => ({ pos: o.position, type: "door" in o ? "any" : "any" }))}
+        openings={wallOpenings("top", doors, windows)}
+        color={wallColor}
       />
       <Wall
         side="bottom"
         start={[x, 0, z + d]}
         length={w}
         axis="x"
-        openings={[...doors, ...windows]
-          .filter((o) => o.wall === "bottom")
-          .map((o) => ({ pos: o.position, type: "any" }))}
+        openings={wallOpenings("bottom", doors, windows)}
+        color={wallColor}
       />
       <Wall
         side="left"
         start={[x, 0, z]}
         length={d}
         axis="z"
-        openings={[...doors, ...windows]
-          .filter((o) => o.wall === "left")
-          .map((o) => ({ pos: o.position, type: "any" }))}
+        openings={wallOpenings("left", doors, windows)}
+        color={wallColor}
       />
       <Wall
         side="right"
         start={[x + w, 0, z]}
         length={d}
         axis="z"
-        openings={[...doors, ...windows]
-          .filter((o) => o.wall === "right")
-          .map((o) => ({ pos: o.position, type: "any" }))}
+        openings={wallOpenings("right", doors, windows)}
+        color={wallColor}
       />
     </group>
   );
+}
+
+function FurnitureMesh({ room, item }: { room: Room; item: FurnitureItem }) {
+  const width = Math.max(item.width / PX_PER_M, 0.1);
+  const depth = Math.max(item.height / PX_PER_M, 0.1);
+  const height = furnitureHeight(item.type);
+  const x = (room.x + item.x) / PX_PER_M + width / 2;
+  const z = (room.y + item.y) / PX_PER_M + depth / 2;
+
+  return (
+    <mesh castShadow receiveShadow position={[x, height / 2, z]}>
+      <boxGeometry args={[width, height, depth]} />
+      <meshStandardMaterial color={furnitureColor(item.type)} roughness={0.72} metalness={0.03} />
+    </mesh>
+  );
+}
+
+function furnitureHeight(type: FurnitureType): number {
+  if (type === "bed" || type === "sofa") return 0.45;
+  if (type === "coffee_table") return 0.32;
+  if (type === "dining_table" || type === "desk" || type === "kitchen_island") return 0.75;
+  if (type === "chair" || type === "toilet" || type === "washer") return 0.5;
+  if (type === "wardrobe" || type === "storage") return 1.4;
+  if (type === "kitchen_counter" || type === "vanity") return 0.9;
+  if (type === "shower") return 1.9;
+  if (type === "car") return 1.25;
+  return 0.6;
+}
+
+function furnitureColor(type: FurnitureType): string {
+  const colors: Record<FurnitureType, string> = {
+    bed: "#facc15",
+    wardrobe: "#a78bfa",
+    sofa: "#22c55e",
+    coffee_table: "#14b8a6",
+    media_console: "#6366f1",
+    dining_table: "#fb923c",
+    chair: "#a8a29e",
+    kitchen_counter: "#60a5fa",
+    kitchen_island: "#3b82f6",
+    toilet: "#f8fafc",
+    vanity: "#38bdf8",
+    shower: "#67e8f9",
+    washer: "#cbd5e1",
+    desk: "#e879f9",
+    car: "#94a3b8",
+    storage: "#d1d5db",
+  };
+  return colors[type] ?? "#d1d5db";
 }
 
 interface WallProps {
@@ -174,17 +231,16 @@ interface WallProps {
   start: [number, number, number];
   length: number;
   axis: "x" | "z";
-  openings: { pos: number; type: string }[];
+  openings: { pos: number; width: number }[];
+  color?: string;
 }
 
-const OPENING_WIDTH = 1.0; // m
-
-function Wall({ start, length, axis, openings }: WallProps) {
+function Wall({ start, length, axis, openings, color = "#e5e7eb" }: WallProps) {
   // Build segments around openings
   const cuts = openings
     .map((o) => ({
-      from: Math.max(0, length * o.pos - OPENING_WIDTH / 2),
-      to: Math.min(length, length * o.pos + OPENING_WIDTH / 2),
+      from: Math.max(0, length * o.pos - o.width / 2),
+      to: Math.min(length, length * o.pos + o.width / 2),
     }))
     .sort((a, b) => a.from - b.from);
 
@@ -214,10 +270,21 @@ function Wall({ start, length, axis, openings }: WallProps) {
         return (
           <mesh key={i} position={pos} castShadow receiveShadow>
             <boxGeometry args={size} />
-            <meshStandardMaterial color="#e5e7eb" roughness={0.8} />
+            <meshStandardMaterial color={color} roughness={0.8} />
           </mesh>
         );
       })}
     </>
   );
+}
+
+function wallOpenings(wall: Door["wall"], doors: Door[], windows: FPWindow[]) {
+  return [
+    ...doors
+      .filter((door) => door.wall === wall)
+      .map((door) => ({ pos: door.position, width: getOpeningWidthMeters(door, "door") })),
+    ...windows
+      .filter((window) => window.wall === wall)
+      .map((window) => ({ pos: window.position, width: getOpeningWidthMeters(window, "window") })),
+  ];
 }

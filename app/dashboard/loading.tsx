@@ -1,10 +1,6 @@
-import Header from "@/components/Header";
-
 export default function DashboardLoading() {
   return (
     <main className="min-h-screen bg-background text-foreground font-sans flex flex-col items-center">
-      <Header user={null} loading={true} />
-      
       <div className="w-full max-w-[1300px] px-6 py-8">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div className="h-8 w-48 bg-secondary/50 animate-pulse rounded-lg"></div>

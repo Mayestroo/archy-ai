@@ -31,8 +31,9 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-.env*
-.env.local
+.env
+.env.*
+.env*.local
 
 # vercel
 .vercel
@@ -41,9 +42,19 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# IDE / Editors
-.vscode/
-.idea/
+# IDE / Editors (allow sharing workspace settings)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/*.code-snippets
+
+.idea/*
+!.idea/*.xml
+!.idea/modules.xml
+!.idea/runConfigurations/
+
 *.suo
 *.ntvs*
 *.njsproj
@@ -64,3 +75,7 @@ archai-startup-session.pdf
 session-ses_*.md
 update_pitch.py
 .antigravitycli/
+docs/
+image_artifacts/
+pdf-research-competitors/
+.agents/

@@ -21,6 +21,7 @@ export const ROOM_ZONES: Record<string, ZoneType> = {
   // Private zone — RIGHT side (all bedrooms + wet rooms)
   bedroom:        "private",
   master_bedroom: "private",
+  study:          "private",
   ensuite:        "private",
   bathroom:       "private",
   // Service zone — FAR RIGHT strip
@@ -147,7 +148,7 @@ ARCHITECTURAL CONSTRAINT RULES (MANDATORY):
 
 RULE 1 — STRICT ZONE SEPARATION (no exceptions):
   • PUBLIC zone  (LEFT side):     living, dining, kitchen, entry ONLY.
-  • PRIVATE zone (RIGHT side):    bedroom, master_bedroom, bathroom, ensuite ONLY.
+  • PRIVATE zone (RIGHT side):    bedroom, master_bedroom, study, bathroom, ensuite ONLY.
   • SERVICE zone (FAR RIGHT strip): laundry, storage, hallway, garage ONLY.
   bathroom and ensuite MUST be private. hallway MUST be service.
   DO NOT mix zones. Zones must never be interleaved.

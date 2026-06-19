@@ -20,7 +20,8 @@ export type RoomType =
   | "laundry"
   | "entry"
   | "garage"
-  | "studio";
+  | "studio"
+  | "study";
 
 export interface ZoneDef {
   x: number;       // meters from bounding box left

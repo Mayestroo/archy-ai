@@ -1,13 +1,16 @@
 import type { GoogleGenerativeAI } from "@google/generative-ai";
 import type { Door, FloorPlan, Room, WallSide } from "./floorplan-schema";
+import { ensureArchitecturalDetail } from "./architectural-detail.ts";
 import { regenerateFurniture } from "./furniture.ts";
 import { regenerateMaterials } from "./materials.ts";
 import { regenerateOpenings } from "./opening-regeneration.ts";
+import type { ShapeKey, WizardAnswers } from "./editor-onboarding";
 import type { UserType } from "./user-types";
 
 type PrivacyZone = "public" | "private" | "service";
 type SiteShape = "rectangle" | "l_shape" | "u_shape" | "courtyard" | "narrow_lot" | "stepped";
 type GenerationMode = "fast" | "quality";
+type PlannerRoomType = "entry" | "living" | "dining" | "kitchen" | "master_bedroom" | "bedroom" | "bathroom" | "ensuite" | "laundry" | "hallway" | "garage" | "study" | "studio" | "closet";
 
 interface PlannerRoomSpec {
   id: string;
@@ -111,6 +114,7 @@ interface GeneratePlannerOptions {
   modelName?: string;
   userType?: UserType | null;
   mode?: GenerationMode;
+  wizardBrief?: WizardAnswers;
 }
 
 const GRID = 50;
@@ -120,10 +124,12 @@ export async function generatePlannerFloorPlan(
   prompt: string,
   options: GeneratePlannerOptions = {},
 ): Promise<PlannerResult> {
-  const baseBrief = inferBrief(prompt, options.userType ?? null);
-  const brief = options.genAI && options.modelName
+  const inferredBrief = inferBrief(prompt, options.userType ?? null);
+  const baseBrief = options.wizardBrief ? applyWizardBrief(inferredBrief, options.wizardBrief) : inferredBrief;
+  const refinedBrief = options.genAI && options.modelName
     ? await refineBriefWithAI(options.genAI, options.modelName, prompt, baseBrief)
     : baseBrief;
+  const brief = options.wizardBrief ? applyWizardBrief(refinedBrief, options.wizardBrief) : refinedBrief;
   const mode = options.mode ?? "fast";
   const solverRequest = {
     brief,
@@ -168,6 +174,7 @@ export function inferBrief(prompt: string, userType: UserType | null = null): Pl
   const targetAreaSqm = inferTargetArea(lower, bedroomCount);
   const siteShape = inferSiteShape(lower);
   const rooms = buildRoomProgram(lower, bedroomCount);
+  const frontDoorSide = inferFrontDoorSide(lower);
   const unsupportedRequests = detectUnsupportedRequests(lower);
 
   return {
@@ -176,7 +183,7 @@ export function inferBrief(prompt: string, userType: UserType | null = null): Pl
     targetAreaSqm,
     areaTolerance: Math.max(12, Math.round(targetAreaSqm * 0.12)),
     siteShape,
-    frontDoorSide: lower.includes("rear entry") ? "bottom" : "top",
+    frontDoorSide,
     rooms,
     mustHave: rooms.map((room) => room.type),
     niceToHave: [
@@ -185,6 +192,73 @@ export function inferBrief(prompt: string, userType: UserType | null = null): Pl
     ],
     unsupportedRequests,
   };
+}
+
+function applyWizardBrief(baseBrief: PlannerBrief, answers: WizardAnswers): PlannerBrief {
+  const targetAreaSqm = answers.area?.unit === "sqft"
+    ? Math.round(answers.area.value * 0.092903)
+    : answers.area?.value ?? baseBrief.targetAreaSqm;
+  const siteShape = answers.shape ? shapeKeyToSiteShape(answers.shape.shapeKey) : baseBrief.siteShape;
+  const rooms = answers.rooms ? buildWizardRoomProgram(answers.rooms) : baseBrief.rooms;
+
+  return {
+    ...baseBrief,
+    targetAreaSqm,
+    areaTolerance: Math.max(8, Math.round(targetAreaSqm * 0.1)),
+    siteShape,
+    frontDoorSide: answers.shape?.frontDoorSide ?? baseBrief.frontDoorSide,
+    rooms,
+    mustHave: rooms.map((room) => room.type),
+    niceToHave: [
+      ...baseBrief.niceToHave.filter((item) => !item.includes("footprint")),
+      `${siteShape.replace("_", "-")} footprint`,
+      ...(answers.extras ?? []),
+      ...(answers.extraNote ? [answers.extraNote] : []),
+    ].filter((item, index, all) => all.indexOf(item) === index),
+  };
+}
+
+function shapeKeyToSiteShape(shapeKey: ShapeKey): SiteShape {
+  if (shapeKey === "t_shape") return "stepped";
+  return shapeKey;
+}
+
+function buildWizardRoomProgram(roomCounts: Record<string, number>): PlannerRoomSpec[] {
+  const rooms: PlannerRoomSpec[] = [];
+  const add = (room: Omit<PlannerRoomSpec, "id">, preferredId = room.type) => {
+    let id = preferredId;
+    let suffix = 2;
+    while (rooms.some((candidate) => candidate.id === id)) {
+      id = `${preferredId}_${suffix}`;
+      suffix += 1;
+    }
+    rooms.push({ ...room, id });
+  };
+  const count = (id: string) => Math.max(0, Math.floor(roomCounts[id] ?? 0));
+  const bedroomCount = count("bedroom");
+  const bathroomCount = count("full_bathroom") + count("guest_bathroom");
+  const closetCount = Math.max(count("walk_in_closet"), count("walk_in"));
+
+  add(roomSpec("entry", "Entry", "public", 4, 1, ["living"]));
+  repeat(count("living_room"), (index) => add(roomSpec("living", index ? `Living Room ${index + 1}` : "Living Room", "public", 20, 1.45, ["entry", "kitchen", "dining"]), index ? `living_${index + 1}` : "living"));
+  repeat(count("dining_room"), (index) => add(roomSpec("dining", index ? `Dining ${index + 1}` : "Dining", "public", 9, 1.25, ["living", "kitchen"]), index ? `dining_${index + 1}` : "dining"));
+  repeat(count("kitchen"), (index) => add(roomSpec("kitchen", index ? `Kitchen ${index + 1}` : "Kitchen", "public", 10, 1.35, ["living", "dining"]), index ? `kitchen_${index + 1}` : "kitchen"));
+  repeat(bedroomCount, (index) => {
+    if (index === 0) add(roomSpec("master_bedroom", bedroomCount === 1 ? "Bedroom" : "Master Bedroom", "private", 16, 1.3, ["hallway", "closet"]), "master_bedroom");
+    else add(roomSpec("bedroom", `Bedroom ${index + 1}`, "private", 11, 1.2, ["hallway", "bathroom"]), `bedroom_${index + 1}`);
+  });
+  repeat(count("office"), (index) => add(roomSpec("study", index ? `Office ${index + 1}` : "Office", "private", 8, 1.2, ["hallway"]), index ? `study_${index + 1}` : "study"));
+  repeat(Math.max(1, bathroomCount), (index) => add(roomSpec("bathroom", index ? `Bathroom ${index + 1}` : "Bathroom", "service", 5, 1, ["hallway", "bedroom", "master_bedroom"]), index ? `bathroom_${index + 1}` : "bathroom"));
+  repeat(count("laundry"), (index) => add(roomSpec("laundry", index ? `Laundry ${index + 1}` : "Laundry", "service", 4, 1.5, ["kitchen", "hallway"]), index ? `laundry_${index + 1}` : "laundry"));
+  repeat(count("pantry"), (index) => add(roomSpec("closet", index ? `Pantry ${index + 1}` : "Pantry", "service", 3, 1.2, ["kitchen"]), index ? `pantry_${index + 1}` : "pantry"));
+  repeat(closetCount, (index) => add(roomSpec("closet", index ? `Walk-in Closet ${index + 1}` : "Walk-in Closet", "private", 4, 1.2, ["master_bedroom", "bedroom", "hallway"]), index ? `walk_in_closet_${index + 1}` : "walk_in_closet"));
+  add(roomSpec("hallway", "Hallway", "service", bedroomCount > 1 ? 6 : 4, 2, ["entry", "master_bedroom", "bedroom", "bathroom"]));
+
+  return rooms;
+}
+
+function repeat(count: number, callback: (index: number) => void) {
+  for (let index = 0; index < count; index += 1) callback(index);
 }
 
 function inferBedroomCount(lower: string): number {
@@ -212,6 +286,13 @@ function inferSiteShape(lower: string): SiteShape {
   if (/\bcourtyard\b/.test(lower)) return "courtyard";
   if (/\bstepped|split\s+mass\b/.test(lower)) return "stepped";
   return "rectangle";
+}
+
+function inferFrontDoorSide(lower: string): PlannerBrief["frontDoorSide"] {
+  const explicit = lower.match(/front\s*door\s*(?:on|at)?\s*the\s*(top|bottom|left|right)\s*side/);
+  if (explicit) return explicit[1] as PlannerBrief["frontDoorSide"];
+  if (/rear\s*entry|back\s*entry/.test(lower)) return "bottom";
+  return "top";
 }
 
 function inferProjectType(lower: string, bedroomCount: number): PlannerBrief["projectType"] {
@@ -264,7 +345,7 @@ function buildRoomProgram(lower: string, bedroomCount: number): PlannerRoomSpec[
 }
 
 function roomSpec(
-  type: string,
+  type: PlannerRoomType,
   label: string,
   zone: PrivacyZone,
   area: number,
@@ -765,8 +846,75 @@ function validateCandidate(candidate: PlannerCandidate, brief: PlannerBrief): bo
   if (hasOverlap(candidate.rooms)) return false;
   if (candidate.rooms.some((room) => room.width < GRID * MIN_ROOM_METERS || room.height < GRID * MIN_ROOM_METERS)) return false;
   if ((candidate.footprintOverflowMeters ?? 0) > Math.max(8, Math.round(brief.targetAreaSqm * 0.06))) return false;
+  if (!hasAcceptablePlanShape(candidate.rooms, brief)) return false;
   if (!hasBasicCirculation(candidate.rooms)) return false;
   return brief.rooms.every((spec) => candidate.rooms.some((room) => room.type === spec.type));
+}
+
+function hasAcceptablePlanShape(rooms: Room[], brief: PlannerBrief): boolean {
+  const bounds = getBounds(rooms);
+  const boundsArea = Math.max(1, bounds.width * bounds.height);
+  const roomArea = rooms.reduce((sum, room) => sum + room.width * room.height, 0);
+  const voidRatio = (boundsArea - roomArea) / Math.max(roomArea, 1);
+  const aspect = Math.max(bounds.width, bounds.height) / Math.max(1, Math.min(bounds.width, bounds.height));
+  const maxAspect = brief.siteShape === "narrow_lot" ? 3.3 : 2.8;
+  const maxVoidRatio = ["l_shape", "u_shape", "courtyard", "stepped"].includes(brief.siteShape) ? 1.35 : 0.75;
+
+  return aspect <= maxAspect && voidRatio <= maxVoidRatio && matchesFootprintIntent(rooms, brief.siteShape);
+}
+
+function matchesFootprintIntent(rooms: Room[], siteShape: SiteShape): boolean {
+  if (siteShape === "rectangle" || siteShape === "narrow_lot") return true;
+
+  const signature = footprintSignature(rooms);
+  if (siteShape === "l_shape") return signature.cornerVoids >= 1;
+  if (siteShape === "u_shape") return signature.edgeRecesses >= 1 && signature.opposingWings >= 1;
+  if (siteShape === "courtyard") return signature.interiorVoids >= 1 || (signature.edgeRecesses >= 2 && signature.opposingWings >= 1);
+  if (siteShape === "stepped") return signature.cornerVoids >= 1 && signature.rowWidths.size >= 3;
+  return true;
+}
+
+function footprintSignature(rooms: Room[]) {
+  const bounds = getBounds(rooms);
+  const cols = Math.max(1, Math.round(bounds.width / GRID));
+  const rows = Math.max(1, Math.round(bounds.height / GRID));
+  const occupied = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+
+  for (const room of rooms) {
+    const startCol = Math.max(0, Math.round((room.x - bounds.x) / GRID));
+    const endCol = Math.min(cols, Math.round((room.x + room.width - bounds.x) / GRID));
+    const startRow = Math.max(0, Math.round((room.y - bounds.y) / GRID));
+    const endRow = Math.min(rows, Math.round((room.y + room.height - bounds.y) / GRID));
+    for (let row = startRow; row < endRow; row += 1) {
+      for (let col = startCol; col < endCol; col += 1) occupied[row][col] = true;
+    }
+  }
+
+  const rowWidths = new Set(occupied.map((row) => row.filter(Boolean).length));
+  const topLeft = !occupied[0]?.[0];
+  const topRight = !occupied[0]?.[cols - 1];
+  const bottomLeft = !occupied[rows - 1]?.[0];
+  const bottomRight = !occupied[rows - 1]?.[cols - 1];
+  const cornerVoids = [topLeft, topRight, bottomLeft, bottomRight].filter(Boolean).length;
+  let edgeRecesses = 0;
+  let interiorVoids = 0;
+  let opposingWings = 0;
+
+  for (let row = 1; row < rows - 1; row += 1) {
+    const filled = occupied[row].filter(Boolean).length;
+    if (filled > 0 && filled < cols) edgeRecesses += 1;
+    if (occupied[row][0] && occupied[row][cols - 1] && occupied[row].slice(1, -1).some((cell) => !cell)) opposingWings += 1;
+  }
+
+  for (let row = 1; row < rows - 1; row += 1) {
+    for (let col = 1; col < cols - 1; col += 1) {
+      if (!occupied[row][col] && occupied[row - 1][col] && occupied[row + 1][col] && occupied[row][col - 1] && occupied[row][col + 1]) {
+        interiorVoids += 1;
+      }
+    }
+  }
+
+  return { cornerVoids, edgeRecesses, interiorVoids, opposingWings, rowWidths };
 }
 
 function snapRoom(room: Room): Room {
@@ -994,7 +1142,7 @@ function assembleFloorPlan(candidate: PlannerCandidate, brief: PlannerBrief, sol
   const unsupportedNotes = brief.unsupportedRequests.map((item) => `Unsupported request not applied: ${item}.`);
   const score = candidate.score;
   const solverDoors = buildSolverInformedDoors(candidate, brief);
-  const plan = regenerateMaterials(regenerateFurniture(regenerateOpenings({
+  const plan = ensureArchitecturalDetail(regenerateMaterials(regenerateFurniture(regenerateOpenings({
     rooms: candidate.rooms,
     doors: solverDoors,
     windows: [],
@@ -1008,7 +1156,7 @@ function assembleFloorPlan(candidate: PlannerCandidate, brief: PlannerBrief, sol
       ...candidate.notes,
       ...unsupportedNotes,
     ],
-  })));
+  }))));
   return plan;
 }
 
@@ -1025,10 +1173,12 @@ function enforceCriticalAdjacencies(candidate: PlannerCandidate, brief: PlannerB
     }
   }
 
+  const normalized = normalizeRooms(rooms);
+
   return {
     ...candidate,
-    rooms,
-    sharedWalls: deriveSharedWalls(rooms),
+    rooms: normalized,
+    sharedWalls: deriveSharedWalls(normalized),
     notes: [
       ...candidate.notes,
       "Planner repaired critical adjacencies into door-ready shared walls where feasible.",
@@ -1228,7 +1378,7 @@ function sharedWallLength(a: Room, b: Room): number {
 
 function zoneForRoom(type: string): PrivacyZone {
   if (["master_bedroom", "bedroom", "study"].includes(type)) return "private";
-  if (["bathroom", "ensuite", "laundry", "hallway"].includes(type)) return "service";
+  if (["bathroom", "ensuite", "laundry", "hallway", "closet"].includes(type)) return "service";
   return "public";
 }
 

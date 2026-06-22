@@ -75,6 +75,14 @@ const MATERIAL_PRESETS: Record<string, MaterialPreset> = {
     floorFinish: "continuous timber-look floor",
     wallFinish: "neutral washable paint",
   },
+  closet: {
+    palette: "Storage Neutral",
+    floorColor: "#ede9fe",
+    wallColor: "#faf5ff",
+    accentColor: "#7c3aed",
+    floorFinish: "continuous timber or carpet floor",
+    wallFinish: "light washable paint",
+  },
   kitchen: {
     palette: "Clean Stone",
     floorColor: "#e2e8f0",
@@ -138,6 +146,7 @@ export const MATERIAL_PALETTE_OPTIONS: MaterialPreset[] = uniqueMaterialPresets(
   MATERIAL_PRESETS.laundry,
   MATERIAL_PRESETS.studio,
   MATERIAL_PRESETS.hallway,
+  MATERIAL_PRESETS.closet,
   DEFAULT_PRESET,
 ]);
 

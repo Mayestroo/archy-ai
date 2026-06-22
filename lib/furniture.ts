@@ -71,6 +71,7 @@ function furnitureSpecsForRoom(room: Room): FurnitureSpec[] {
   if (type === "studio") return studioSpecs(room);
   if (type === "garage") return garageSpecs(room);
   if (type === "entry") return entrySpecs(room);
+  if (type === "closet") return closetSpecs(room);
 
   return [];
 }
@@ -226,6 +227,18 @@ function entrySpecs(room: Room): FurnitureSpec[] {
   return specs;
 }
 
+function closetSpecs(room: Room): FurnitureSpec[] {
+  if (room.width < 80 || room.height < 80) return [];
+  return [{
+    type: "wardrobe",
+    label: "Storage",
+    x: 12,
+    y: 12,
+    width: Math.min(42, room.width - 24),
+    height: Math.max(40, room.height - 24),
+  }];
+}
+
 function createFurnitureItem(room: Room, spec: FurnitureSpec, index: number): FurnitureItem | null {
   const margin = Math.min(ROOM_MARGIN, room.width / 8, room.height / 8);
   const maxWidth = Math.max(0, room.width - margin * 2);
@@ -260,6 +273,7 @@ function normalizeRoomType(value: string): string {
   if (normalized === "home_office" || normalized === "office" || normalized === "office_room") return "study";
   if (normalized === "wc" || normalized === "guest_wc" || normalized === "powder_room") return "bathroom";
   if (normalized === "lounge") return "living";
+  if (normalized === "walk_in" || normalized === "walk_in_closet" || normalized === "closet" || normalized === "pantry") return "closet";
   return normalized;
 }
 

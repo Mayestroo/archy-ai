@@ -15,6 +15,7 @@ import {
 } from "@/lib/layout-engine";
 import type { FloorPlan } from "@/lib/floorplan-schema";
 import { isUserType, type UserType } from "@/lib/user-types";
+import type { WizardAnswers } from "@/lib/editor-onboarding";
 
 // ── Request / Response shapes ─────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ interface GenerateRequest {
   prompt: string;
   currentFloorPlan?: FloorPlan; // For "Smart Layout" refinement
   userType?: UserType | null;
+  wizardBrief?: WizardAnswers;
 }
 
 interface GenerateResponse {
@@ -217,6 +219,7 @@ export async function POST(
   }
 
   const { prompt, currentFloorPlan } = body;
+  const wizardBrief = body.wizardBrief && typeof body.wizardBrief === "object" ? body.wizardBrief : undefined;
   const userType = isUserType(body.userType) ? body.userType : null;
   if (!prompt) {
     return NextResponse.json({ error: "No prompt provided." }, { status: 400 });
@@ -256,6 +259,7 @@ export async function POST(
         modelName,
         userType,
         mode: "quality",
+        wizardBrief,
       });
 
       const cleanedFloorPlan = validateAndFixFloorPlan(plannerResult.floorPlan);

@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { INTERIOR_CONCEPT_STYLE_OPTIONS } from "@/lib/interior-concepts";
-import { EXTERIOR_CONCEPT_STYLE_OPTIONS } from "@/lib/exterior-concepts";
 import type { InteriorConceptStyle, ExteriorConceptStyle } from "@/lib/floorplan-schema";
 
 type StyleScope = "interior" | "exterior";

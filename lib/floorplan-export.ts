@@ -1,4 +1,5 @@
-import type { Door, FloorPlan, FurnitureItem, FurnitureType, Room, WallSide, Window as FloorPlanWindow } from "./floorplan-schema";
+import type { ArchitecturalBuiltIn, ArchitecturalCore, Door, FloorPlan, FurnitureItem, FurnitureType, Room, WallSide, Window as FloorPlanWindow } from "./floorplan-schema";
+import { ensureArchitecturalDetail } from "./architectural-detail";
 import { ensureFurniture } from "./furniture";
 import { ensureMaterials, getRoomMaterial } from "./materials";
 import {
@@ -52,7 +53,7 @@ export const FLOOR_PLAN_EXPORT_QUALITIES: Array<{ value: FloorPlanExportQuality;
 ];
 
 export async function exportFloorPlanPDF(floorPlan: FloorPlan, metadata: ExportMetadata = {}) {
-  const exportPlan = ensureFurniture(ensureMaterials(floorPlan));
+  const exportPlan = ensureArchitecturalDetail(ensureFurniture(ensureMaterials(floorPlan)));
   const { jsPDF } = await import("jspdf");
   const exportTemplate = getExportTemplate(metadata.template);
   const exportQuality = getExportQuality(metadata.quality);
@@ -104,7 +105,7 @@ export async function exportFloorPlanPDF(floorPlan: FloorPlan, metadata: ExportM
 }
 
 export function exportFloorPlanPNG(floorPlan: FloorPlan, metadata: ExportMetadata = {}) {
-  const exportPlan = ensureFurniture(ensureMaterials(floorPlan));
+  const exportPlan = ensureArchitecturalDetail(ensureFurniture(ensureMaterials(floorPlan)));
   const exportTemplate = getExportTemplate(metadata.template);
   const exportQuality = getExportQuality(metadata.quality);
   const qualityConfig = getQualityConfig(exportQuality);
@@ -149,9 +150,9 @@ function drawPdfPlan(
     doc.setDrawColor(strokeRgb.r, strokeRgb.g, strokeRgb.b);
     doc.setLineWidth(0.45);
     doc.setGState(doc.GState({ opacity: technical ? 0.06 : material ? 0.38 : 0.16 }));
-    doc.rect(rect.x, rect.y, rect.w, rect.h, "F");
+    drawPdfRoomFill(doc, floorPlan, room, bounds, scale, offX, offY, "F");
     doc.setGState(doc.GState({ opacity: 1 }));
-    doc.rect(rect.x, rect.y, rect.w, rect.h, "S");
+    drawPdfRoomFill(doc, floorPlan, room, bounds, scale, offX, offY, "S");
     drawPdfFurniture(doc, rect, roomFurniture(floorPlan, room.id), scale, technical);
     doc.setTextColor(17, 24, 39);
     doc.setFont("helvetica", "bold");
@@ -163,6 +164,9 @@ function drawPdfPlan(
     drawPdfRoomDimensions(doc, rect, room);
   });
 
+  drawPdfArchitecturalWalls(doc, floorPlan, bounds, scale, offX, offY, technical);
+  floorPlan.architectural?.builtIns?.forEach((builtIn) => drawPdfBuiltIn(doc, builtIn, bounds, scale, offX, offY));
+  floorPlan.architectural?.cores?.forEach((core) => drawPdfCore(doc, core, bounds, scale, offX, offY));
   floorPlan.doors?.forEach((door) => drawPdfDoor(doc, floorPlan.rooms, door, bounds, scale, offX, offY));
   floorPlan.windows?.forEach((window) => drawPdfWindow(doc, floorPlan.rooms, window, bounds, scale, offX, offY));
   drawPdfScaleBar(doc, offX + 4, offY + bounds.height * scale - 5, bounds, scale);
@@ -340,8 +344,8 @@ function drawPngExport(ctx: CanvasRenderingContext2D, floorPlan: FloorPlan, meta
     ctx.fillStyle = technical ? "rgba(17,24,39,0.06)" : material ? withAlpha(material.floorColor, "b8") : `${PALETTE[index % PALETTE.length]}26`;
     ctx.strokeStyle = technical ? "#111827" : material?.accentColor ?? "#111827";
     ctx.lineWidth = technical ? 2.5 : 2;
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    drawCanvasRoomFill(ctx, floorPlan, room, bounds, scale, offX, offY, true);
+    drawCanvasRoomFill(ctx, floorPlan, room, bounds, scale, offX, offY, false);
     drawCanvasFurniture(ctx, rect, roomFurniture(floorPlan, room.id), scale, technical);
     ctx.fillStyle = "#111827";
     ctx.textAlign = "center";
@@ -353,6 +357,9 @@ function drawPngExport(ctx: CanvasRenderingContext2D, floorPlan: FloorPlan, meta
     drawCanvasRoomDimensions(ctx, rect, room);
   });
 
+  drawCanvasArchitecturalWalls(ctx, floorPlan, bounds, scale, offX, offY, technical);
+  floorPlan.architectural?.builtIns?.forEach((builtIn) => drawCanvasBuiltIn(ctx, builtIn, bounds, scale, offX, offY));
+  floorPlan.architectural?.cores?.forEach((core) => drawCanvasCore(ctx, core, bounds, scale, offX, offY));
   floorPlan.doors?.forEach((door) => drawCanvasDoor(ctx, floorPlan.rooms, door, bounds, scale, offX, offY));
   floorPlan.windows?.forEach((window) => drawCanvasWindow(ctx, floorPlan.rooms, window, bounds, scale, offX, offY));
   drawCanvasScaleBar(ctx, offX + 18, offY + bounds.height * scale - 22, bounds, scale);
@@ -385,6 +392,187 @@ function drawCanvasGrid(ctx: CanvasRenderingContext2D, bounds: PlanBounds, scale
     const py = offY + (y - bounds.minY) * scale;
     line(ctx, offX, py, offX + bounds.width * scale, py);
   }
+}
+
+function drawPdfRoomFill(doc: import("jspdf").jsPDF, floorPlan: FloorPlan, room: Room, bounds: PlanBounds, scale: number, offX: number, offY: number, style: "F" | "S") {
+  const points = roomPolygonPoints(floorPlan, room).map((point) => mapPoint(point.x, point.y, bounds, scale, offX, offY));
+  if (points.length < 3) {
+    const rect = mapRoom(room, bounds, scale, offX, offY);
+    doc.rect(rect.x, rect.y, rect.w, rect.h, style);
+    return;
+  }
+
+  const [first, ...rest] = points;
+  const vectors = rest.map((point, index) => {
+    const previous = index === 0 ? first : rest[index - 1];
+    return [point.x - previous.x, point.y - previous.y];
+  });
+  doc.lines(vectors, first.x, first.y, [1, 1], style, true);
+}
+
+function drawCanvasRoomFill(ctx: CanvasRenderingContext2D, floorPlan: FloorPlan, room: Room, bounds: PlanBounds, scale: number, offX: number, offY: number, fill: boolean) {
+  const points = roomPolygonPoints(floorPlan, room).map((point) => mapPoint(point.x, point.y, bounds, scale, offX, offY));
+  if (points.length < 3) {
+    const rect = mapRoom(room, bounds, scale, offX, offY);
+    if (fill) ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    else ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  else ctx.stroke();
+}
+
+function roomPolygonPoints(floorPlan: FloorPlan, room: Room) {
+  const polygon = floorPlan.architectural?.roomPolygons.find((candidate) => candidate.roomId === room.id);
+  return polygon?.points.length ? polygon.points : [
+    { x: room.x, y: room.y },
+    { x: room.x + room.width, y: room.y },
+    { x: room.x + room.width, y: room.y + room.height },
+    { x: room.x, y: room.y + room.height },
+  ];
+}
+
+function drawPdfArchitecturalWalls(doc: import("jspdf").jsPDF, floorPlan: FloorPlan, bounds: PlanBounds, scale: number, offX: number, offY: number, technical: boolean) {
+  const architectural = floorPlan.architectural;
+  if (!architectural?.wallSegments?.length) return;
+
+  for (const wall of architectural.wallSegments) {
+    const a = mapPoint(wall.x1, wall.y1, bounds, scale, offX, offY);
+    const b = mapPoint(wall.x2, wall.y2, bounds, scale, offX, offY);
+    doc.setDrawColor(wall.exterior ? 17 : 31, wall.exterior ? 24 : 41, wall.exterior ? 39 : 55);
+    doc.setLineWidth(Math.max(technical ? 0.35 : 0.45, wall.thickness * scale * 0.75));
+    doc.line(a.x, a.y, b.x, b.y);
+  }
+}
+
+function drawCanvasArchitecturalWalls(ctx: CanvasRenderingContext2D, floorPlan: FloorPlan, bounds: PlanBounds, scale: number, offX: number, offY: number, technical: boolean) {
+  const architectural = floorPlan.architectural;
+  if (!architectural?.wallSegments?.length) return;
+
+  ctx.save();
+  ctx.lineCap = "square";
+  for (const wall of architectural.wallSegments) {
+    const a = mapPoint(wall.x1, wall.y1, bounds, scale, offX, offY);
+    const b = mapPoint(wall.x2, wall.y2, bounds, scale, offX, offY);
+    ctx.strokeStyle = wall.exterior ? "#111827" : technical ? "#1f2937" : "#374151";
+    ctx.lineWidth = Math.max(technical ? 2 : 2.5, wall.thickness * scale);
+    line(ctx, a.x, a.y, b.x, b.y);
+  }
+  ctx.restore();
+}
+
+function drawPdfBuiltIn(doc: import("jspdf").jsPDF, builtIn: ArchitecturalBuiltIn, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const rect = mapBuiltIn(builtIn, bounds, scale, offX, offY);
+  const wet = builtIn.kind === "wet_zone";
+  doc.setFillColor(wet ? 209 : 243, wet ? 250 : 244, wet ? 229 : 246);
+  doc.setDrawColor(wet ? 15 : 55, wet ? 118 : 65, wet ? 110 : 81);
+  doc.setLineWidth(0.22);
+  doc.roundedRect(rect.x, rect.y, rect.w, rect.h, 0.9, 0.9, "FD");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(Math.max(3.2, Math.min(5, rect.w / Math.max(builtIn.label.length, 2))));
+  doc.setTextColor(wet ? 15 : 55, wet ? 118 : 65, wet ? 110 : 81);
+  if (rect.w >= 5 && rect.h >= 3) doc.text(builtIn.label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, { align: "center" });
+}
+
+function drawCanvasBuiltIn(ctx: CanvasRenderingContext2D, builtIn: ArchitecturalBuiltIn, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const rect = mapBuiltIn(builtIn, bounds, scale, offX, offY);
+  const wet = builtIn.kind === "wet_zone";
+  ctx.save();
+  ctx.fillStyle = wet ? "rgba(20,184,166,0.14)" : "rgba(17,24,39,0.06)";
+  ctx.strokeStyle = wet ? "#0f766e" : "#374151";
+  ctx.lineWidth = 1.4;
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 5);
+  ctx.fill();
+  ctx.stroke();
+  const hatchCount = Math.max(1, Math.floor((rect.w + rect.h) / 90));
+  ctx.globalAlpha = 0.5;
+  for (let index = 0; index < hatchCount; index += 1) {
+    const x = rect.x + ((index + 1) / (hatchCount + 1)) * rect.w;
+    line(ctx, x, rect.y + 4, x, rect.y + rect.h - 4);
+  }
+  ctx.globalAlpha = 1;
+  if (rect.w >= 24 && rect.h >= 14) {
+    ctx.fillStyle = wet ? "#0f766e" : "#374151";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `700 ${Math.max(8, Math.min(12, rect.w / Math.max(builtIn.label.length * 0.7, 2)))}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText(builtIn.label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+  }
+  ctx.restore();
+}
+
+function drawPdfCore(doc: import("jspdf").jsPDF, core: ArchitecturalCore, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const rect = mapCore(core, bounds, scale, offX, offY);
+  const stair = core.kind === "stair";
+  doc.setFillColor(stair ? 255 : 219, stair ? 237 : 234, stair ? 213 : 254);
+  doc.setDrawColor(stair ? 124 : 30, stair ? 45 : 58, stair ? 18 : 138);
+  doc.setLineWidth(0.25);
+  doc.roundedRect(rect.x, rect.y, rect.w, rect.h, 0.9, 0.9, "FD");
+  if (stair) {
+    const steps = Math.max(3, Math.floor(rect.h / 3.5));
+    for (let index = 0; index < steps; index += 1) {
+      const y = rect.y + ((index + 1) / (steps + 1)) * rect.h;
+      doc.line(rect.x + 1, y, rect.x + rect.w - 1, y);
+    }
+  } else {
+    doc.line(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    doc.line(rect.x + rect.w, rect.y, rect.x, rect.y + rect.h);
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(Math.max(3.2, Math.min(5, rect.w / Math.max(core.label.length, 2))));
+  doc.text(core.label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, { align: "center" });
+}
+
+function drawCanvasCore(ctx: CanvasRenderingContext2D, core: ArchitecturalCore, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const rect = mapCore(core, bounds, scale, offX, offY);
+  const stair = core.kind === "stair";
+  ctx.save();
+  ctx.fillStyle = stair ? "rgba(251,146,60,0.12)" : "rgba(59,130,246,0.12)";
+  ctx.strokeStyle = stair ? "#7c2d12" : "#1e3a8a";
+  ctx.lineWidth = 1.6;
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 5);
+  ctx.fill();
+  ctx.stroke();
+  if (stair) {
+    const steps = Math.max(3, Math.floor(rect.h / 18));
+    for (let index = 0; index < steps; index += 1) {
+      const y = rect.y + ((index + 1) / (steps + 1)) * rect.h;
+      line(ctx, rect.x + 5, y, rect.x + rect.w - 5, y);
+    }
+  } else {
+    line(ctx, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    line(ctx, rect.x + rect.w, rect.y, rect.x, rect.y + rect.h);
+  }
+  if (rect.w >= 24 && rect.h >= 14) {
+    ctx.fillStyle = stair ? "#7c2d12" : "#1e3a8a";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `700 ${Math.max(8, Math.min(12, rect.w / Math.max(core.label.length * 0.7, 2)))}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText(core.label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+  }
+  ctx.restore();
+}
+
+function mapBuiltIn(builtIn: ArchitecturalBuiltIn, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const point = mapPoint(builtIn.x, builtIn.y, bounds, scale, offX, offY);
+  return { x: point.x, y: point.y, w: builtIn.width * scale, h: builtIn.height * scale };
+}
+
+function mapCore(core: ArchitecturalCore, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  const point = mapPoint(core.x, core.y, bounds, scale, offX, offY);
+  return { x: point.x, y: point.y, w: core.width * scale, h: core.height * scale };
+}
+
+function mapPoint(x: number, y: number, bounds: PlanBounds, scale: number, offX: number, offY: number) {
+  return {
+    x: offX + (x - bounds.minX) * scale,
+    y: offY + (y - bounds.minY) * scale,
+  };
 }
 
 function drawPdfFurniture(

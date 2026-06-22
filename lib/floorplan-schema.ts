@@ -123,6 +123,66 @@ export interface RoomMaterial {
   manual?: boolean;
 }
 
+export interface PlanPoint {
+  x: number;
+  y: number;
+}
+
+export interface ArchitecturalWallSegment {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  exterior: boolean;
+  thickness: number;
+  roomIds: string[];
+}
+
+export interface RoomPolygon {
+  roomId: string;
+  points: PlanPoint[];
+}
+
+export type BuiltInKind = "closet" | "cabinet" | "counter" | "wet_zone" | "storage";
+
+export interface ArchitecturalBuiltIn {
+  id: string;
+  roomId: string;
+  kind: BuiltInKind;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type ArchitecturalCoreKind = "stair" | "service_shaft";
+
+export interface ArchitecturalCore {
+  id: string;
+  kind: ArchitecturalCoreKind;
+  label: string;
+  roomId?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ArchitecturalDetail {
+  version: "wall_graph_v1";
+  wallThickness: {
+    exterior: number;
+    interior: number;
+  };
+  footprint: PlanPoint[];
+  roomPolygons: RoomPolygon[];
+  wallSegments: ArchitecturalWallSegment[];
+  builtIns: ArchitecturalBuiltIn[];
+  cores: ArchitecturalCore[];
+}
+
 export type InteriorConceptStyle = "warm_minimal" | "modern_neutral" | "scandinavian" | "luxury_contemporary" | "builder_display";
 export type ExteriorConceptStyle = "modern_minimal" | "warm_contemporary" | "scandinavian" | "luxury_villa" | "builder_spec";
 
@@ -174,6 +234,8 @@ export interface FloorPlan {
   rooms: Room[];
   doors: Door[];
   windows: Window[];
+  /** Optional professional drawing layer derived from room geometry. */
+  architectural?: ArchitecturalDetail;
   /** Deterministic furniture suggestions, positioned relative to each room */
   furniture?: FurnitureItem[];
   /** Deterministic room material and finish presets */

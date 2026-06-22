@@ -7,8 +7,95 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Planned
+
+- Selected Full Advanced AI Planner implementation as the next generation-quality milestone, based on `docs/superpowers/specs/2026-06-19-advanced-ai-planner-design.md`.
+- Planned completion work includes structured wizard brief handoff, exact room-count parsing, hard footprint containment for rectangle/L/U/courtyard/narrow/stepped shapes, stronger candidate validation, bounded AI critic selection, planner fallback notes, and regression coverage for failed wizard prompts.
+- The prompt `1 floor, 80 sqm, U-shape, front door bottom, 1 bedroom, kitchen, laundry, walk-in, dining, living, full bathroom, walk-in closet, keep bedrooms away from street noise` is now the first required regression case for planner quality.
+
+### Known Gaps
+
+- `docs/superpowers/specs/2026-06-13-editor-qa-onboarding-implementation-plan.md` is only partially complete in product behavior: guided onboarding exists, but shape preview details, room-modal floor grouping, back navigation, render modal wiring, and some reference-artifact polish remain incomplete.
+- `docs/superpowers/specs/2026-06-19-advanced-ai-planner-design.md` is not fully implemented: the current planner is still a heuristic candidate placer, not the full constraint-generation, hard-validation, scoring, AI-critic, and graceful-fallback pipeline described in the design.
+- Current planner inference can ignore front-door side, exact wizard room counts, walk-in closet requirements, and strict U-shape footprint intent, which can produce stretched or fragmented floor plans.
+
 ### Added
 
+- Added AI Spatial Planner v1:
+  - Replaced primary template-based generation with role-aware planner-generated floor plans under the `ai_planner` template marker.
+  - Added prompt-to-brief inference for project type, target area, site shape, room program, user type, zones, adjacency, and unsupported requests.
+  - Added multi-candidate generation, validation, scoring, optional AI critic selection, and existing `FloorPlan` schema compatibility.
+- Added TypeScript Hybrid Spatial Solver v1:
+  - Added procedural candidate strategies: graph-zone, slicing-tree, squarified-area, boundary-seed, and mutated-refinement.
+  - Added scoring for adjacency, wall sharing, circulation, privacy, daylight, wet-room clustering, buildability, area fit, and role fit.
+  - Kept deterministic template generation as fallback/debug/regression behavior instead of the primary generation path.
+- Added Spatial Solver Backend Boundary v1:
+  - Added `SpatialSolver`, solver request/result contracts, backend metadata, and runtime backend selection via `SPATIAL_SOLVER_BACKEND`.
+  - Added `typescript_hybrid` and `ortools_microservice` backend support.
+  - Added automatic TypeScript fallback when the external solver fails, times out, or returns no candidates.
+- Added OR-Tools Microservice Solver v1:
+  - Added FastAPI service scaffold at `services/ortools-solver` with `/health` and `/solve` endpoints.
+  - Added CP-SAT rectangle placement with fixed room sizes, `NoOverlap2D`, adjacency objectives, zoning penalties, and deterministic fallback.
+  - Added local service documentation and Python dependency pinning.
+- Added OR-Tools Wall Adjacency v2:
+  - Added directional shared-wall booleans for CP-SAT room pairs.
+  - Added minimum shared-wall overlap constraints for door-ready adjacency.
+  - Added hard touch rules for master bedroom/ensuite, hallway/private rooms, entry/public zone, and kitchen/dining.
+  - Added shared-wall metadata output with room IDs, wall sides, shared length, and opening positions.
+- Added Solver-Informed Openings v3:
+  - Preserved OR-Tools `sharedWalls` metadata through the TypeScript adapter.
+  - Seeded generated doors from solver-provided shared-wall evidence before automatic opening regeneration.
+  - Added fallback derived shared-wall evidence for non-OR-Tools candidates.
+- Added CP-SAT Circulation v4:
+  - Added entry-to-living/studio circulation constraints.
+  - Added hallway-to-bedroom/master bedroom/bathroom/study shared-wall constraints.
+  - Added hallway-distance objective terms for private/service circulation quality.
+  - Expanded adjacency matching so type-based adjacency applies to all matching rooms, not only the first match.
+- Added CP-SAT Footprint Containment v5:
+  - Added mode-aware footprint constraints for OR-Tools candidates.
+  - `quality` mode now hard-constrains rooms inside the target footprint.
+  - `fast` mode keeps only small bounded overflow slack.
+- Added Wall Graph + Architectural Detail Layer v1:
+  - Added optional `architectural` metadata to floor plans without breaking the existing rectangle-room schema.
+  - Added derived wall graph segments with exterior/interior wall thickness, room polygon boundaries, and footprint polygon data.
+  - Planner-generated plans now include `wall_graph_v1` metadata.
+  - Canvas, PDF export, and PNG export now render wall graph segments with professional wall thickness while preserving existing editing compatibility.
+- Added Footprint Polygon v2:
+  - Replaced architectural footprint metadata fallback from bounding rectangle only to traced exterior wall outline where possible.
+  - Added rectilinear outline tracing from exterior wall graph segments for L-shaped and stepped room unions.
+  - Kept bounding-box fallback when exterior outline tracing cannot safely close a loop.
+- Added Polygon Room Rendering v1:
+  - Canvas room fills now render from `architectural.roomPolygons` metadata instead of hardcoded rectangles when metadata exists.
+  - PDF and PNG exports now render room fills/outlines through polygon paths with rectangle fallback.
+  - Kept existing rectangle-based editing, furniture anchoring, labels, dimensions, doors, and windows compatible during the migration.
+- Added Room Notches / Recessed Corners v1:
+  - Added deterministic recessed-corner polygon generation for larger living, kitchen, dining, entry, hallway, studio, and garage rooms.
+  - Kept notches in the optional architectural metadata layer so solver geometry, editing, doors, windows, labels, and furniture remain rectangle-compatible.
+  - Added safe size thresholds and snapped notch depths/lengths to avoid tiny or invalid room polygons.
+- Added Wall Graph From Polygon Boundaries v2:
+  - Architectural wall segments are now derived from room polygon edges instead of rectangle-only room bounds.
+  - Recessed/notched polygon edges now appear in the wall graph and render/export with wall thickness.
+  - Preserved exterior/interior wall thickness metadata using polygon edge adjacency detection.
+- Added Closet + Built-in Zones v1:
+  - Added optional architectural built-in metadata for closets, storage, kitchen counters/cabinets, and bathroom wet zones.
+  - Added deterministic built-in generation for bedrooms, master bedrooms, kitchens, bathrooms, ensuites, entries, and hallways.
+  - Canvas, PDF export, and PNG export now render built-ins as architectural fixed elements separate from movable furniture.
+  - Kept built-ins in the architectural detail layer so solver geometry and room editing remain compatible.
+- Added Stair / Service Core v1:
+  - Added optional architectural core metadata for stair cores and service shafts.
+  - Added deterministic stair core placement for larger plans anchored near hallway, garage, or public zone rooms.
+  - Added deterministic service shaft placement near wet rooms such as bathrooms, ensuites, laundries, and kitchens.
+  - Canvas, PDF export, and PNG export now render stair/service core symbols.
+- Added Planner Verification v2:
+  - Expanded floor plan verification to cover planner non-template output, solver metadata, fallback behavior, shared-wall quality, live OR-Tools backend behavior, solver-informed doors, circulation reachability, and quality-mode footprint containment smoke tests.
+  - Added architectural detail verification for wall graph metadata, room polygons, and exterior/interior wall thickness.
+  - Added fixture coverage for non-bounding rectilinear footprint outline generation.
+  - Added renderability checks for polygon room coordinate metadata.
+  - Added fixture coverage for notched room polygon generation.
+  - Added fixture coverage to ensure recessed polygon edges are represented in the wall graph.
+  - Added built-in zone validation for known room IDs, positive dimensions, and supported built-in kinds.
+  - Added architectural core validation for supported core kinds, known room IDs, and positive dimensions.
+  - Added fixture coverage for stair and service shaft core generation.
 - Added signup user segmentation with three roles: Homeowner, Architect / Designer, and Real Estate / Builder.
 - Added `profiles.user_type` and `floor_plans.user_type` so user segment can power onboarding, analytics, pricing, and future recommendations.
 - Added role-based starter briefs on the dashboard and editor sidebar.
@@ -187,6 +274,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- Generation architecture changed from fixed deterministic template selection as the primary path to solver-based `ai_planner` generation with deterministic templates retained as fallback/debug/regression assets.
+- OR-Tools solver documentation now describes mode-aware footprint containment, shared-wall adjacency constraints, circulation reachability constraints, and fallback behavior.
+- Floor plan rendering changed to prefer architectural wall graph metadata when present, with runtime derivation for older plans that do not yet store it.
+- Room fill rendering changed to prefer architectural room polygon metadata while preserving rectangle fallbacks for older or manually edited plans.
+- Wall rendering changed to prefer polygon-derived architectural wall segments so room notches and recessed corners affect wall outlines, not only room fills.
 - Canvas background changed from line grid to dotted grid pattern.
 - Canvas default theme changed from dark to light.
 - Added theme toggle (light/dark mode switcher) to header and editor.
@@ -200,6 +292,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `npm run lint`
 - `npm run build`
 - `npm run test:floorplans`
+- `SPATIAL_SOLVER_BACKEND=ortools SPATIAL_SOLVER_URL=http://127.0.0.1:9/solve npm run test:floorplans`
+- Live OR-Tools FastAPI service with `SPATIAL_SOLVER_BACKEND=ortools` and `SPATIAL_SOLVER_URL=http://127.0.0.1:8787/solve`
+- `.venv/Scripts/python -m py_compile services/ortools-solver/main.py`
+- Direct OR-Tools quality-mode smoke test returning feasible output with `footprintOverflowMeters = 0`
 
 ## Current Product Capabilities
 

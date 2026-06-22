@@ -46,7 +46,6 @@ import RoomProgramModal from "@/components/editor/RoomProgramModal";
 import StylePickerModal, { type StylePickerResult } from "@/components/editor/StylePickerModal";
 import FinishPickerModal from "@/components/editor/FinishPickerModal";
 import FurnitureBrowser from "@/components/editor/FurnitureBrowser";
-import RenderScenePanel from "@/components/editor/RenderScenePanel";
 import {
   type GenerationStage,
   type WizardAnswers,
@@ -219,7 +218,7 @@ export default function EditorPage() {
     };
   }, [initialPrompt, floorPlan, loading, prompt]);
 
-  async function handleGenerate(newPrompt: string) {
+  async function handleGenerate(newPrompt: string, wizardBrief?: WizardAnswers) {
     if (!newPrompt.trim() || loading) return;
 
     setLoading(true);
@@ -233,6 +232,7 @@ export default function EditorPage() {
           prompt: newPrompt.trim(),
           currentFloorPlan: floorPlan,
           userType,
+          wizardBrief,
         }),
       });
 
@@ -683,7 +683,7 @@ export default function EditorPage() {
   function handleWizardGenerate() {
     const compiled = compileWizardPrompt(wizardAnswers, userType);
     setWizardPhase("generating");
-    void handleGenerate(compiled);
+    void handleGenerate(compiled, wizardAnswers);
   }
 
   function handleStartNewPlan() {

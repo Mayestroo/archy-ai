@@ -50,7 +50,7 @@ export default function FloorPlan3D({ floorPlan }: FloorPlan3DProps) {
   return (
     <div className="w-full h-full">
       <Canvas
-        shadows
+        shadows="percentage"
         camera={{
           position: [center.cx + cameraDistance * 0.7, cameraDistance * 0.8, center.cz + cameraDistance * 0.7],
           fov: 50,

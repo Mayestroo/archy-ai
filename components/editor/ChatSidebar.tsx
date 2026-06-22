@@ -14,7 +14,6 @@ import {
   formatShapeAnswer,
   getWizardIntro,
   getWizardStepPrompt,
-  getWizardSteps,
   type WizardAnswers,
   type WizardModal,
   type WizardPhase,
@@ -147,9 +146,9 @@ export default function ChatSidebar({
     setExtrasInput("");
   }
 
-  function renderWizardBubble(role: "user" | "assistant", text: string) {
+  function renderWizardBubble(key: string, role: "user" | "assistant", text: string) {
     return (
-      <div className={`flex ${role === "user" ? "justify-end" : "justify-start"} animate-in fade-in slide-in-from-bottom-1 duration-300`}>
+      <div key={key} className={`flex ${role === "user" ? "justify-end" : "justify-start"} animate-in fade-in slide-in-from-bottom-1 duration-300`}>
         <div
           className={`max-w-[85%] text-sm px-3.5 py-2.5 rounded-2xl leading-relaxed ${
             role === "user"
@@ -320,17 +319,17 @@ export default function ChatSidebar({
     const completedSteps = WIZARD_STEPS.slice(0, currentIdx);
 
     const elements: React.ReactNode[] = [];
-    elements.push(renderWizardBubble("assistant", getWizardIntro(userType)));
+    elements.push(renderWizardBubble("intro", "assistant", getWizardIntro(userType)));
 
     completedSteps.forEach((step) => {
-      elements.push(renderWizardBubble("assistant", getWizardStepPrompt(step, userType)));
+      elements.push(renderWizardBubble(`${step}-prompt`, "assistant", getWizardStepPrompt(step, userType)));
       const summary = renderWizardStepSummary(step);
       if (summary) {
-        elements.push(renderWizardBubble("user", summary));
+        elements.push(renderWizardBubble(`${step}-summary`, "user", summary));
       }
     });
 
-    elements.push(renderWizardBubble("assistant", getWizardStepPrompt(wizardStep, userType)));
+    elements.push(renderWizardBubble(`${wizardStep}-current-prompt`, "assistant", getWizardStepPrompt(wizardStep, userType)));
 
     if (wizardStep === "review" || wizardStep === "extras") {
       elements.push(

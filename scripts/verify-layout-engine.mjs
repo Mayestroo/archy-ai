@@ -49,6 +49,9 @@ import {
   resizeRoomGeometry,
   snapToGrid,
 } from "../lib/room-geometry.ts";
+import {
+  createArchitecturalDetail,
+} from "../lib/architectural-detail.ts";
 
 const wallSides = new Set(["top", "bottom", "left", "right"]);
 const templates = listPixelTemplates();
@@ -99,7 +102,15 @@ assertValidOpenings(plannerResult.floorPlan, "ai planner");
 assertValidFurniture(plannerResult.floorPlan, "ai planner");
 assertValidMaterials(plannerResult.floorPlan, "ai planner");
 assertPlannerGeometryQuality(plannerResult.floorPlan, "ai planner");
+assertArchitecturalDetail(plannerResult.floorPlan, "ai planner");
+assertRectilinearFootprintOutline();
 assertPlannerRequiredAdjacencyOpenings(plannerResult.floorPlan, plannerBrief, "ai planner", plannerResult.solver.backend === "ortools_microservice");
+assertPlannerCirculation(plannerResult.floorPlan, "ai planner", plannerResult.solver.backend === "ortools_microservice");
+
+await assertWizardPlannerRegression("u_shape", 80, 1);
+for (const shapeKey of ["rectangle", "l_shape", "t_shape", "stepped", "courtyard"]) {
+  await assertWizardPlannerRegression(shapeKey, 100, 2);
+}
 
 const studyPlan = generateLayout({
   template: "3bed_rectangle",
@@ -290,7 +301,7 @@ assert.ok(facadeConceptPlan.exteriorConcept.renderPrompt.includes("Exterior arch
 assert.ok(facadeConceptPlan.exteriorConcept.facadeMoves.length >= 3, "exterior concept should include facade direction moves");
 assertValidMaterials(facadeConceptPlan, "exterior concept material hydration");
 
-console.log(`Verified ${templates.length} floor plan templates.`);
+console.log(`Verified ${templates.length} deterministic templates plus AI planner, spatial solver, openings, furniture, materials, and architectural detail layers.`);
 
 function assertNoOverlaps(rooms, templateKey) {
   for (let i = 0; i < rooms.length; i++) {
@@ -380,10 +391,18 @@ function assertValidMaterials(plan, label) {
 }
 
 function assertPlannerGeometryQuality(plan, label) {
+  const bounds = getBounds(plan.rooms);
+  const occupiedArea = plan.rooms.reduce((sum, room) => sum + room.width * room.height, 0);
+  const boundingArea = Math.max(1, bounds.width * bounds.height);
+  const voidRatio = (boundingArea - occupiedArea) / Math.max(occupiedArea, 1);
+  const aspect = Math.max(bounds.width, bounds.height) / Math.max(1, Math.min(bounds.width, bounds.height));
   const sharedWallPairs = countSharedWallPairs(plan.rooms);
   const exteriorRoomCount = plan.rooms.filter((room) => touchesExterior(room, plan.rooms)).length;
   const yBands = new Set(plan.rooms.map((room) => room.y));
 
+  assert.ok(plan.rooms.every((room) => room.x >= 0 && room.y >= 0), `${label} should normalize rooms to non-negative coordinates`);
+  assert.ok(aspect <= 3, `${label} should avoid stretched whole-plan bounding boxes`);
+  assert.ok(voidRatio <= 1.5, `${label} should avoid fragmented sparse layouts`);
   assert.ok(sharedWallPairs >= Math.floor(plan.rooms.length * 0.55), `${label} should have substantial wall-level room adjacency`);
   assert.ok(exteriorRoomCount >= Math.floor(plan.rooms.length * 0.35), `${label} should expose enough rooms to exterior walls for daylight`);
   assert.ok(yBands.size >= 3, `${label} should produce multi-zone geometry, not a single-row packing`);
@@ -391,6 +410,160 @@ function assertPlannerGeometryQuality(plan, label) {
     plan.generationNotes.some((note) => note.includes("graph placement") || note.includes("OR-Tools CP-SAT rectangle placement")),
     `${label} should report solver-based geometry generation`
   );
+}
+
+async function assertWizardPlannerRegression(shapeKey, area, bedroomCount) {
+  const wizardBrief = {
+    floors: 1,
+    area: { value: area, unit: "sqm" },
+    shape: { shapeKey, frontDoorSide: "bottom", attachments: [] },
+    rooms: {
+      bedroom: bedroomCount,
+      kitchen: 1,
+      laundry: 1,
+      dining_room: 1,
+      living_room: 1,
+      full_bathroom: 1,
+      walk_in_closet: 1,
+    },
+    extras: ["Keep bedrooms away from street noise"],
+  };
+  const planResult = await generatePlannerFloorPlan(
+    `Create a comfortable practical ${shapeKey} floor plan. Floors: 1 Area: ${area} sqm Footprint: ${shapeKey}; front door on the bottom side. Rooms: ${bedroomCount} bedroom, 1 kitchen, 1 laundry, 1 dining room, 1 living room, 1 full bathroom, 1 walk in closet. Additional requirements: Keep bedrooms away from street noise`,
+    { mode: "quality", wizardBrief }
+  );
+  const plan = planResult.floorPlan;
+  const label = `wizard ${shapeKey} regression`;
+  const requestedMin = Math.round(area * 0.82);
+  const requestedMax = Math.round(area * 1.18);
+
+  assert.equal(plan.template, "ai_planner", `${label} should use planner path`);
+  assert.ok(plan.totalArea >= requestedMin && plan.totalArea <= requestedMax, `${label} should stay near requested area`);
+  assert.equal(plan.rooms.filter((room) => room.type === "master_bedroom" || room.type === "bedroom").length, bedroomCount, `${label} should preserve bedroom count`);
+  assert.equal(plan.rooms.filter((room) => room.type === "ensuite").length, 0, `${label} should not invent an ensuite`);
+  assert.equal(plan.rooms.filter((room) => room.type === "closet" && /walk-in/i.test(room.label)).length, 1, `${label} should include one walk-in closet room`);
+  assertNoOverlaps(plan.rooms, label);
+  assertValidOpenings(plan, label);
+  assertValidFurniture(plan, label);
+  assertValidMaterials(plan, label);
+  assertPlannerGeometryQuality(plan, label);
+  assertFootprintIntent(plan.rooms, shapeKey, label);
+  assertArchitecturalDetail(plan, label);
+}
+
+function assertFootprintIntent(rooms, shapeKey, label) {
+  if (shapeKey === "rectangle") return;
+  const signature = footprintSignature(rooms);
+  if (shapeKey === "l_shape") assert.ok(signature.cornerVoids >= 1, `${label} should include an L-shape corner void`);
+  if (shapeKey === "u_shape") {
+    assert.ok(signature.edgeRecesses >= 1, `${label} should include a U-shape recess`);
+    assert.ok(signature.opposingWings >= 1, `${label} should include opposing U-shape wings`);
+  }
+  if (shapeKey === "courtyard") assert.ok(signature.interiorVoids >= 1 || signature.edgeRecesses >= 2, `${label} should include courtyard/recess void space`);
+  if (shapeKey === "t_shape" || shapeKey === "stepped") {
+    assert.ok(signature.cornerVoids >= 1, `${label} should include stepped massing voids`);
+    assert.ok(signature.rowWidths.size >= 3, `${label} should include varied row widths`);
+  }
+}
+
+function footprintSignature(rooms) {
+  const bounds = getBounds(rooms);
+  const grid = 50;
+  const cols = Math.max(1, Math.round(bounds.width / grid));
+  const rows = Math.max(1, Math.round(bounds.height / grid));
+  const occupied = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+
+  for (const room of rooms) {
+    const startCol = Math.max(0, Math.round((room.x - bounds.x) / grid));
+    const endCol = Math.min(cols, Math.round((room.x + room.width - bounds.x) / grid));
+    const startRow = Math.max(0, Math.round((room.y - bounds.y) / grid));
+    const endRow = Math.min(rows, Math.round((room.y + room.height - bounds.y) / grid));
+    for (let row = startRow; row < endRow; row++) {
+      for (let col = startCol; col < endCol; col++) occupied[row][col] = true;
+    }
+  }
+
+  const rowWidths = new Set(occupied.map((row) => row.filter(Boolean).length));
+  const cornerVoids = [
+    !occupied[0]?.[0],
+    !occupied[0]?.[cols - 1],
+    !occupied[rows - 1]?.[0],
+    !occupied[rows - 1]?.[cols - 1],
+  ].filter(Boolean).length;
+  let edgeRecesses = 0;
+  let interiorVoids = 0;
+  let opposingWings = 0;
+
+  for (let row = 1; row < rows - 1; row++) {
+    const filled = occupied[row].filter(Boolean).length;
+    if (filled > 0 && filled < cols) edgeRecesses += 1;
+    if (occupied[row][0] && occupied[row][cols - 1] && occupied[row].slice(1, -1).some((cell) => !cell)) opposingWings += 1;
+  }
+
+  for (let row = 1; row < rows - 1; row++) {
+    for (let col = 1; col < cols - 1; col++) {
+      if (!occupied[row][col] && occupied[row - 1][col] && occupied[row + 1][col] && occupied[row][col - 1] && occupied[row][col + 1]) interiorVoids += 1;
+    }
+  }
+
+  return { cornerVoids, edgeRecesses, interiorVoids, opposingWings, rowWidths };
+}
+
+function assertArchitecturalDetail(plan, label) {
+  assert.equal(plan.architectural?.version, "wall_graph_v1", `${label} should include architectural wall graph metadata`);
+  assert.ok(plan.architectural.wallSegments.length >= plan.rooms.length * 2, `${label} should include wall graph segments`);
+  assert.equal(plan.architectural.roomPolygons.length, plan.rooms.length, `${label} should include one polygon per room`);
+  assert.ok(plan.architectural.footprint.length >= 4, `${label} should include a footprint outline polygon`);
+  assert.ok(plan.architectural.builtIns.length > 0, `${label} should include architectural built-in zones`);
+  assert.ok(Array.isArray(plan.architectural.cores), `${label} should include architectural core metadata`);
+  assert.ok(plan.architectural.wallSegments.some((wall) => wall.exterior && wall.thickness > plan.architectural.wallThickness.interior), `${label} should distinguish exterior wall thickness`);
+  for (const polygon of plan.architectural.roomPolygons) {
+    assert.ok(plan.rooms.some((room) => room.id === polygon.roomId), `${label} has polygon for unknown room ${polygon.roomId}`);
+    assert.ok(polygon.points.length >= 4, `${label} should derive a renderable polygon boundary for rooms`);
+    assert.ok(polygon.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)), `${label} should include renderable polygon coordinates`);
+  }
+  for (const builtIn of plan.architectural.builtIns) {
+    assert.ok(plan.rooms.some((room) => room.id === builtIn.roomId), `${label} has built-in for unknown room ${builtIn.roomId}`);
+    assert.ok(builtIn.width > 0 && builtIn.height > 0, `${label} should include positive built-in dimensions`);
+    assert.ok(["closet", "cabinet", "counter", "wet_zone", "storage"].includes(builtIn.kind), `${label} has unknown built-in kind ${builtIn.kind}`);
+  }
+  for (const core of plan.architectural.cores) {
+    assert.ok(["stair", "service_shaft"].includes(core.kind), `${label} has unknown core kind ${core.kind}`);
+    assert.ok(core.width > 0 && core.height > 0, `${label} should include positive core dimensions`);
+    if (core.roomId) assert.ok(plan.rooms.some((room) => room.id === core.roomId), `${label} has core for unknown room ${core.roomId}`);
+  }
+}
+
+function assertRectilinearFootprintOutline() {
+  const detail = createArchitecturalDetail([
+    { id: "a", type: "living", label: "Living", x: 0, y: 0, width: 100, height: 100 },
+    { id: "b", type: "kitchen", label: "Kitchen", x: 100, y: 0, width: 100, height: 100 },
+    { id: "c", type: "bedroom", label: "Bedroom", x: 0, y: 100, width: 100, height: 100 },
+  ]);
+  assert.ok(detail.footprint.length > 4, "architectural detail should trace non-bounding rectilinear footprints");
+  const notchedDetail = createArchitecturalDetail([
+    { id: "living", type: "living", label: "Living", x: 0, y: 0, width: 300, height: 220 },
+    { id: "kitchen", type: "kitchen", label: "Kitchen", x: 300, y: 0, width: 220, height: 180 },
+  ]);
+  assert.ok(notchedDetail.roomPolygons.some((polygon) => polygon.points.length > 4), "architectural detail should add safe recessed room polygon corners for larger rooms");
+  assert.ok(
+    notchedDetail.wallSegments.some((wall) => wall.roomIds.includes("living") && wall.x1 === 225 && wall.y1 === 0 && wall.x2 === 225 && wall.y2 === 25),
+    "architectural wall graph should include recessed polygon wall edges"
+  );
+  assert.ok(notchedDetail.builtIns.some((builtIn) => builtIn.kind === "counter" && builtIn.roomId === "kitchen"), "architectural detail should add kitchen counter built-ins");
+  const coreDetail = createArchitecturalDetail([
+    { id: "entry", type: "entry", label: "Entry", x: 0, y: 0, width: 120, height: 100 },
+    { id: "living", type: "living", label: "Living", x: 120, y: 0, width: 300, height: 220 },
+    { id: "hallway", type: "hallway", label: "Hallway", x: 120, y: 220, width: 220, height: 120 },
+    { id: "kitchen", type: "kitchen", label: "Kitchen", x: 420, y: 0, width: 220, height: 180 },
+    { id: "bathroom", type: "bathroom", label: "Bathroom", x: 340, y: 220, width: 120, height: 110 },
+    { id: "bedroom", type: "bedroom", label: "Bedroom", x: 460, y: 180, width: 190, height: 160 },
+    { id: "bedroom_2", type: "bedroom", label: "Bedroom 2", x: 0, y: 100, width: 120, height: 160 },
+    { id: "garage", type: "garage", label: "Garage", x: 0, y: 260, width: 220, height: 180 },
+    { id: "laundry", type: "laundry", label: "Laundry", x: 220, y: 340, width: 120, height: 100 },
+  ]);
+  assert.ok(coreDetail.cores.some((core) => core.kind === "stair"), "architectural detail should add stair core metadata for larger plans");
+  assert.ok(coreDetail.cores.some((core) => core.kind === "service_shaft"), "architectural detail should add service shaft metadata near wet rooms");
 }
 
 function assertPlannerRequiredAdjacencyOpenings(plan, brief, label, strict) {
@@ -411,6 +584,66 @@ function assertPlannerRequiredAdjacencyOpenings(plan, brief, label, strict) {
       );
     }
   }
+}
+
+function assertPlannerCirculation(plan, label, strict) {
+  const entry = plan.rooms.find((room) => room.type === "entry");
+  const publicTarget = plan.rooms.find((room) => ["living", "studio"].includes(room.type));
+  const hallway = plan.rooms.find((room) => room.type === "hallway");
+  assert.ok(entry, `${label} should include an entry for circulation`);
+
+  if (entry && publicTarget) {
+    assert.ok(isReachableByDoors(plan, entry.id, publicTarget.id), `${label} should connect entry to the public zone by doors`);
+  }
+
+  if (!strict || !hallway) return;
+
+  for (const room of plan.rooms.filter((candidate) => ["master_bedroom", "bedroom", "bathroom", "study"].includes(candidate.type))) {
+    const sharedWall = getSharedWall(room, hallway);
+    assert.ok(sharedWall, `${label} should connect ${room.type} to hallway on a shared wall`);
+    assert.ok(
+      plan.doors.some((door) => doorOpensBetween(door, room, hallway, sharedWall)),
+      `${label} should place a circulation door between ${room.type} and hallway`
+    );
+  }
+}
+
+function isReachableByDoors(plan, startId, targetId) {
+  const queue = [startId];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const currentId = queue.shift();
+    if (currentId === targetId) return true;
+    const room = plan.rooms.find((candidate) => candidate.id === currentId);
+    if (!room) continue;
+
+    for (const door of plan.doors ?? []) {
+      if (door.roomId === currentId) {
+        const adjacent = adjacentRoomForDoor(plan.rooms, room, door.wall);
+        if (adjacent && !seen.has(adjacent.id)) {
+          seen.add(adjacent.id);
+          queue.push(adjacent.id);
+        }
+      } else {
+        const doorRoom = plan.rooms.find((candidate) => candidate.id === door.roomId);
+        if (!doorRoom) continue;
+        const sharedWall = getSharedWall(room, doorRoom);
+        if (sharedWall && doorOpensBetween(door, room, doorRoom, sharedWall) && !seen.has(doorRoom.id)) {
+          seen.add(doorRoom.id);
+          queue.push(doorRoom.id);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function adjacentRoomForDoor(rooms, room, wall) {
+  return rooms.find((candidate) => {
+    if (candidate.id === room.id) return false;
+    const sharedWall = getSharedWall(room, candidate);
+    return sharedWall?.wallA === wall;
+  });
 }
 
 function isCriticalDoorPair(a, b) {
@@ -467,11 +700,16 @@ function sharedWallLength(a, b) {
 }
 
 function touchesExterior(room, rooms) {
-  const minX = Math.min(...rooms.map((candidate) => candidate.x));
-  const minY = Math.min(...rooms.map((candidate) => candidate.y));
-  const maxX = Math.max(...rooms.map((candidate) => candidate.x + candidate.width));
-  const maxY = Math.max(...rooms.map((candidate) => candidate.y + candidate.height));
-  return room.x === minX || room.y === minY || room.x + room.width === maxX || room.y + room.height === maxY;
+  const bounds = getBounds(rooms);
+  return room.x === bounds.x || room.y === bounds.y || room.x + room.width === bounds.x + bounds.width || room.y + room.height === bounds.y + bounds.height;
+}
+
+function getBounds(rooms) {
+  const minX = Math.min(...rooms.map((room) => room.x));
+  const minY = Math.min(...rooms.map((room) => room.y));
+  const maxX = Math.max(...rooms.map((room) => room.x + room.width));
+  const maxY = Math.max(...rooms.map((room) => room.y + room.height));
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 function isHexColor(value) {

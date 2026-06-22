@@ -3,7 +3,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line, Group, Circle, Ellipse, Path } from "react-konva";
 import type Konva from "konva";
-import type { Door, FloorPlan, FurnitureItem, Room } from "@/lib/floorplan-schema";
+import type { ArchitecturalBuiltIn, ArchitecturalCore, Door, FloorPlan, FurnitureItem, Room } from "@/lib/floorplan-schema";
+import { createArchitecturalDetail } from "@/lib/architectural-detail";
 import { getRoomMaterial } from "@/lib/materials";
 import { CANVAS_UNITS_PER_METER, getDoorHinge, getDoorSwing, getOpeningWidthPixels, type OpeningSelection } from "@/lib/openings";
 import {
@@ -115,7 +116,18 @@ export default function FloorPlanCanvas({
 
   const colorFor = (i: number) => PALETTE[i % PALETTE.length];
 
-  const wallSegments = useMemo(() => collectWallSegments(floorPlan.rooms), [floorPlan.rooms]);
+  const wallSegments = useMemo(
+    () => floorPlan.architectural?.wallSegments ?? createArchitecturalDetail(floorPlan.rooms).wallSegments,
+    [floorPlan.architectural?.wallSegments, floorPlan.rooms],
+  );
+  const builtIns = useMemo(
+    () => floorPlan.architectural?.builtIns ?? createArchitecturalDetail(floorPlan.rooms).builtIns,
+    [floorPlan.architectural?.builtIns, floorPlan.rooms],
+  );
+  const cores = useMemo(
+    () => floorPlan.architectural?.cores ?? createArchitecturalDetail(floorPlan.rooms).cores,
+    [floorPlan.architectural?.cores, floorPlan.rooms],
+  );
 
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
     e.evt.preventDefault();
@@ -207,14 +219,13 @@ export default function FloorPlanCanvas({
             const material = getRoomMaterial(floorPlan, room.id);
             const roomFill = material?.floorColor ?? `${color}10`;
             return (
-              <Group key={room.id}>
-                <Rect
-                  x={room.x} y={room.y}
-                  width={room.width} height={room.height}
-                  fill={roomFill}
-                  listening={false}
-                />
-              </Group>
+              <Line
+                key={room.id}
+                points={roomPolygonPoints(floorPlan, room)}
+                closed
+                fill={roomFill}
+                listening={false}
+              />
             );
           })}
 
@@ -224,10 +235,20 @@ export default function FloorPlanCanvas({
               key={`wall-${i}`}
               points={[seg.x1, seg.y1, seg.x2, seg.y2]}
               stroke={WALL_COLOR}
-              strokeWidth={(seg.exterior ? EXTERIOR_STROKE : INTERIOR_STROKE) / scale}
+              strokeWidth={(seg.thickness ?? (seg.exterior ? EXTERIOR_STROKE : INTERIOR_STROKE)) / scale}
               lineCap="square"
               listening={false}
             />
+          ))}
+
+          {/* Built-ins */}
+          {builtIns.map((builtIn) => (
+            <BuiltInSymbol key={builtIn.id} builtIn={builtIn} scale={scale} />
+          ))}
+
+          {/* Service/stair cores */}
+          {cores.map((core) => (
+            <CoreSymbol key={core.id} core={core} scale={scale} />
           ))}
 
           {/* Doors */}
@@ -442,81 +463,103 @@ export default function FloorPlanCanvas({
   );
 }
 
-// ── Wall segment collection ──────────────────────────────────────────────────
-
-interface WallSegment {
-  x1: number; y1: number; x2: number; y2: number;
-  exterior: boolean;
-}
-
-function collectWallSegments(rooms: Room[]): WallSegment[] {
-  const exterior = new Set<string>();
-  const EPS = 2;
-
-  for (const room of rooms) {
-    for (const side of ["top", "bottom", "left", "right"] as const) {
-      if (isWallExterior(room, side, rooms, EPS)) {
-        exterior.add(`${room.id}:${side}`);
-      }
-    }
-  }
-
-  const seen = new Set<string>();
-  const segments: WallSegment[] = [];
-
-  for (const room of rooms) {
-    for (const side of ["top", "bottom", "left", "right"] as const) {
-      const isExt = exterior.has(`${room.id}:${side}`);
-      const { x1, y1, x2, y2 } = wallCoords(room, side);
-      const key = isExt
-        ? `ext:${Math.round(Math.min(x1, x2))}:${Math.round(Math.min(y1, y2))}:${Math.round(Math.max(x1, x2))}:${Math.round(Math.max(y1, y2))}`
-        : `int:${Math.round(x1)}:${Math.round(y1)}:${Math.round(x2)}:${Math.round(y2)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      segments.push({ x1, y1, x2, y2, exterior: isExt });
-    }
-  }
-
-  return segments;
-}
-
-function isWallExterior(
-  room: Room,
-  wall: "top" | "bottom" | "left" | "right",
-  allRooms: Room[],
-  eps: number,
-): boolean {
-  for (const other of allRooms) {
-    if (other.id === room.id) continue;
-    if (wall === "top" || wall === "bottom") {
-      const roomEdge = wall === "top" ? room.y : room.y + room.height;
-      const otherEdge1 = other.y;
-      const otherEdge2 = other.y + other.height;
-      const overlaps = room.x < other.x + other.width - eps && room.x + room.width > other.x + eps;
-      if (overlaps && Math.abs(roomEdge - otherEdge1) < eps && otherEdge2 > room.y + eps) return false;
-      if (overlaps && Math.abs(roomEdge - otherEdge2) < eps && otherEdge1 < room.y + room.height - eps) return false;
-    } else {
-      const roomEdge = wall === "left" ? room.x : room.x + room.width;
-      const otherEdge1 = other.x;
-      const otherEdge2 = other.x + other.width;
-      const overlaps = room.y < other.y + other.height - eps && room.y + room.height > other.y + eps;
-      if (overlaps && Math.abs(roomEdge - otherEdge1) < eps && otherEdge2 > room.x + eps) return false;
-      if (overlaps && Math.abs(roomEdge - otherEdge2) < eps && otherEdge1 < room.x + room.width - eps) return false;
-    }
-  }
-  return true;
-}
-
-function wallCoords(room: Room, side: "top" | "bottom" | "left" | "right") {
-  switch (side) {
-    case "top":    return { x1: room.x, y1: room.y, x2: room.x + room.width, y2: room.y };
-    case "bottom": return { x1: room.x, y1: room.y + room.height, x2: room.x + room.width, y2: room.y + room.height };
-    case "left":   return { x1: room.x, y1: room.y, x2: room.x, y2: room.y + room.height };
-    case "right":  return { x1: room.x + room.width, y1: room.y, x2: room.x + room.width, y2: room.y + room.height };
-  }
-}
-
 // ── Window double-line ──────────────────────────────────────────────────────
+
+function roomPolygonPoints(floorPlan: FloorPlan, room: Room): number[] {
+  const polygon = floorPlan.architectural?.roomPolygons.find((candidate) => candidate.roomId === room.id);
+  const points = polygon?.points.length ? polygon.points : [
+    { x: room.x, y: room.y },
+    { x: room.x + room.width, y: room.y },
+    { x: room.x + room.width, y: room.y + room.height },
+    { x: room.x, y: room.y + room.height },
+  ];
+  return points.flatMap((point) => [point.x, point.y]);
+}
+
+function BuiltInSymbol({ builtIn, scale }: { builtIn: ArchitecturalBuiltIn; scale: number }) {
+  const stroke = builtIn.kind === "wet_zone" ? "#0f766e" : "#374151";
+  const fill = builtIn.kind === "wet_zone" ? "rgba(20,184,166,0.14)" : "rgba(17,24,39,0.06)";
+  const hatchCount = Math.max(1, Math.floor((builtIn.width + builtIn.height) / 70));
+  return (
+    <Group listening={false}>
+      <Rect
+        x={builtIn.x}
+        y={builtIn.y}
+        width={builtIn.width}
+        height={builtIn.height}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1 / scale}
+        cornerRadius={2 / scale}
+      />
+      {Array.from({ length: hatchCount }).map((_, index) => {
+        const offset = ((index + 1) / (hatchCount + 1)) * builtIn.width;
+        return (
+          <Line
+            key={index}
+            points={[builtIn.x + offset, builtIn.y + 2 / scale, builtIn.x + offset, builtIn.y + builtIn.height - 2 / scale]}
+            stroke={stroke}
+            strokeWidth={0.45 / scale}
+            opacity={0.55}
+          />
+        );
+      })}
+      <Text
+        x={builtIn.x}
+        y={builtIn.y + builtIn.height / 2 - 5 / scale}
+        width={builtIn.width}
+        text={builtIn.label}
+        align="center"
+        fontSize={9 / scale}
+        fontStyle="bold"
+        fill={stroke}
+        opacity={0.72}
+      />
+    </Group>
+  );
+}
+
+function CoreSymbol({ core, scale }: { core: ArchitecturalCore; scale: number }) {
+  const stair = core.kind === "stair";
+  const stroke = stair ? "#7c2d12" : "#1e3a8a";
+  const fill = stair ? "rgba(251,146,60,0.12)" : "rgba(59,130,246,0.12)";
+  const steps = Math.max(3, Math.floor(core.height / 18));
+  return (
+    <Group listening={false}>
+      <Rect
+        x={core.x}
+        y={core.y}
+        width={core.width}
+        height={core.height}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1.2 / scale}
+        cornerRadius={2 / scale}
+      />
+      {stair && Array.from({ length: steps }).map((_, index) => {
+        const y = core.y + ((index + 1) / (steps + 1)) * core.height;
+        return <Line key={index} points={[core.x + 4 / scale, y, core.x + core.width - 4 / scale, y]} stroke={stroke} strokeWidth={0.7 / scale} opacity={0.8} />;
+      })}
+      {!stair && (
+        <>
+          <Line points={[core.x, core.y, core.x + core.width, core.y + core.height]} stroke={stroke} strokeWidth={0.7 / scale} opacity={0.7} />
+          <Line points={[core.x + core.width, core.y, core.x, core.y + core.height]} stroke={stroke} strokeWidth={0.7 / scale} opacity={0.7} />
+        </>
+      )}
+      <Text
+        x={core.x}
+        y={core.y + core.height / 2 - 5 / scale}
+        width={core.width}
+        text={core.label}
+        align="center"
+        fontSize={9 / scale}
+        fontStyle="bold"
+        fill={stroke}
+        opacity={0.82}
+      />
+    </Group>
+  );
+}
 
 function WindowDoubleLine({ x1, y1, x2, y2, wall, scale }: {
   x1: number; y1: number; x2: number; y2: number;

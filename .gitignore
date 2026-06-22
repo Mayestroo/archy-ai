@@ -75,7 +75,7 @@ archai-startup-session.pdf
 session-ses_*.md
 update_pitch.py
 .antigravitycli/
-docs/
+# docs/
 image_artifacts/
 pdf-research-competitors/
 .agents/
